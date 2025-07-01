@@ -194,6 +194,8 @@ clone_repository() {
     if [[ -d "$INSTALL_DIR/repo/.git" ]]; then
         log "Repository directory exists, updating..."
         cd "$INSTALL_DIR/repo"
+        # Ensure proper ownership before git operations
+        sudo chown -R root:root "$INSTALL_DIR/repo"
         sudo git pull origin main
     else
         log "Cloning repository: $REPO_URL"
@@ -202,16 +204,27 @@ clone_repository() {
             sudo rm -rf "$INSTALL_DIR/repo"
         fi
         sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
-        
-        # Set proper ownership for the repo directory
-        sudo chown -R "$USER:$USER" "$INSTALL_DIR/repo"
-        chmod 755 "$INSTALL_DIR/repo"
     fi
     
-    # Set git configuration for the system
+    # Set proper ownership for the repo directory to root (service user)
+    sudo chown -R root:root "$INSTALL_DIR/repo"
+    sudo chmod 755 "$INSTALL_DIR/repo"
+    
+    # Set git configuration for the system service
     cd "$INSTALL_DIR/repo"
     sudo git config user.name "GitOps System"
     sudo git config user.email "gitops@$(hostname)"
+    
+    # Disable filemode tracking to prevent permission conflicts
+    # Scripts will get execute permissions from git hooks and explicit chmod
+    sudo git config core.filemode false
+    
+    # Disable git hooks during service operations to prevent permission conflicts
+    # Hooks are designed for development workflow, not production sync
+    sudo git config core.hooksPath /dev/null
+    
+    # Ensure scripts are executable after clone/update
+    sudo find "$INSTALL_DIR/repo" -name "*.sh" -type f -exec chmod +x {} \;
     
     log "Repository cloned/updated"
 }
