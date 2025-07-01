@@ -195,9 +195,6 @@ clone_repository() {
         log "Repository directory exists, updating..."
         cd "$INSTALL_DIR/repo"
         sudo git pull origin main
-        
-        # Set execute permissions on all shell scripts after update
-        find "$INSTALL_DIR/repo" -name "*.sh" -type f -exec chmod +x {} \;
     else
         log "Cloning repository: $REPO_URL"
         # Remove any existing directory that's not a git repo
@@ -209,9 +206,6 @@ clone_repository() {
         # Set proper ownership for the repo directory
         sudo chown -R "$USER:$USER" "$INSTALL_DIR/repo"
         chmod 755 "$INSTALL_DIR/repo"
-        
-        # Set execute permissions on all shell scripts
-        find "$INSTALL_DIR/repo" -name "*.sh" -type f -exec chmod +x {} \;
     fi
     
     # Set git configuration for the system
