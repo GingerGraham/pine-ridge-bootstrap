@@ -8,56 +8,59 @@ REPO_URL="${REPO_URL:-https://github.com/yourusername/pine-ridge-podman.git}"
 INSTALL_DIR="/opt/pine-ridge-podman"
 SYSTEMD_DIR="/etc/systemd/system"
 QUADLET_DIR="/etc/containers/systemd"
-LOG_FILE="/tmp/pine-ridge-podman-setup.log"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+# Set some variables that logging.sh expects to avoid unbound variable errors
+ZSH_VERSION="${ZSH_VERSION:-}"
+NO_COLOR="${NO_COLOR:-}"
+CLICOLOR="${CLICOLOR:-}"
+CLICOLOR_FORCE="${CLICOLOR_FORCE:-}"
 
-log() {
-    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1" | tee -a "$LOG_FILE" 2>/dev/null || echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"
-}
-
-warn() {
-    echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S')] WARNING:${NC} $1" | tee -a "$LOG_FILE" 2>/dev/null || echo -e "${YELLOW}[$(date +'%Y-%m-%d %H:%M:%S')] WARNING:${NC} $1"
-}
-
-error() {
-    echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" | tee -a "$LOG_FILE" 2>/dev/null || echo -e "${RED}[$(date +'%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1"
-    exit 1
-}
+# Source the shared logging module (try to find it relative to this script)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+if [[ -f "$REPO_ROOT/bin/logging.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "$REPO_ROOT/bin/logging.sh"
+    # Initialize logging with file output
+    LOG_FILE="/tmp/pine-ridge-podman-setup.log_info"
+    init_logger --log "$LOG_FILE" --journal --tag "bootstrap" --level INFO
+else
+    # Fallback to basic logging if shared module not available
+    LOG_FILE="/tmp/pine-ridge-podman-setup.log_info"
+    log_info() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"; }
+    log_warn() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] WARNING: $1" | tee -a "$LOG_FILE"; }
+    log_error() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $1" | tee -a "$LOG_FILE"; exit 1; }
+fi
 
 check_prerequisites() {
-    log "Checking prerequisites..."
+    log_info "Checking prerequisites..."
     
     # Check if running as non-root with sudo
     if [[ $EUID -eq 0 ]]; then
-        error "This script should not be run as root. Run as a user with sudo privileges."
+        log_error "This script should not be run as root. Run as a user with sudo privileges."
     fi
     
     # Check sudo access
     if ! sudo -n true 2>/dev/null; then
-        error "This script requires sudo privileges. Please run with a user in the wheel group."
+        log_error "This script requires sudo privileges. Please run with a user in the wheel group."
     fi
     
     # Check if podman is installed
     if ! command -v podman &> /dev/null; then
-        error "Podman is not installed. Please install podman first: sudo dnf install podman"
+        log_error "Podman is not installed. Please install podman first: sudo dnf install podman"
     fi
     
     # Check if git is installed
     if ! command -v git &> /dev/null; then
-        log "Installing git..."
+        log_info "Installing git..."
         sudo dnf install -y git
     fi
     
-    log "Prerequisites check completed"
+    log_info "Prerequisites check completed"
 }
 
 setup_directories() {
-    log "Setting up directory structure..."
+    log_info "Setting up directory structure..."
     
     sudo mkdir -p "$INSTALL_DIR"/{logs,secrets,backups}
     sudo mkdir -p "$QUADLET_DIR"
@@ -71,11 +74,11 @@ setup_directories() {
     chmod 755 "$INSTALL_DIR/logs"
     chmod 755 "$INSTALL_DIR/backups"
     
-    log "Directory structure created (repo directory will be created during git clone)"
+    log_info "Directory structure created (repo directory will be created during git clone)"
 }
 
 setup_ssh_authentication() {
-    log "Setting up SSH authentication for Git..."
+    log_info "Setting up SSH authentication for Git..."
     
     local ssh_dir="/root/.ssh"
     local ssh_key="$ssh_dir/gitops_ed25519"
@@ -87,20 +90,20 @@ setup_ssh_authentication() {
     
     # Generate SSH key if it doesn't exist
     if [[ ! -f "$ssh_key" ]]; then
-        log "Generating SSH key for GitOps..."
+        log_info "Generating SSH key for GitOps..."
         sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "gitops@$(hostname)"
         sudo chmod 600 "$ssh_key"
         sudo chmod 644 "$ssh_key.pub"
         
-        log "SSH key generated: $ssh_key.pub"
+        log_info "SSH key generated: $ssh_key.pub"
     else
-        log "SSH key already exists: $ssh_key"
-        log "Removing existing key and generating new one..."
+        log_info "SSH key already exists: $ssh_key"
+        log_info "Removing existing key and generating new one..."
         sudo rm -f "$ssh_key" "$ssh_key.pub"
         sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "gitops@$(hostname)"
         sudo chmod 600 "$ssh_key"
         sudo chmod 644 "$ssh_key.pub"
-        log "New SSH key generated: $ssh_key.pub"
+        log_info "New SSH key generated: $ssh_key.pub"
     fi
     # Always show the SSH key and setup instructions (whether new or existing)
     echo
@@ -159,27 +162,27 @@ convert_repo_url_to_ssh() {
     # Convert HTTPS GitHub URLs to SSH format
     if [[ "$REPO_URL" =~ ^https://github\.com/(.+)\.git$ ]]; then
         REPO_URL="git@github.com:${BASH_REMATCH[1]}.git"
-        log "Converted repository URL to SSH format: $REPO_URL"
+        log_info "Converted repository URL to SSH format: $REPO_URL"
     elif [[ "$REPO_URL" =~ ^https://github\.com/(.+)$ ]]; then
         REPO_URL="git@github.com:${BASH_REMATCH[1]}.git"
-        log "Converted repository URL to SSH format: $REPO_URL"
+        log_info "Converted repository URL to SSH format: $REPO_URL"
     fi
 }
 
 clone_repository() {
-    log "Cloning repository..."
+    log_info "Cloning repository..."
     
     # Test SSH connection first
     local ssh_test_result
     ssh_test_result=$(sudo ssh -T git@github.com 2>&1 || true)
     
     if echo "$ssh_test_result" | grep -q "You've successfully authenticated, but GitHub does not provide shell access"; then
-        log "SSH connection to GitHub verified successfully"
+        log_info "SSH connection to GitHub verified successfully"
     else
-        warn "SSH connection to GitHub failed. Please verify:"
-        warn "1. The deploy key is added to your repository"
-        warn "2. Your repository URL is correct"
-        warn "3. The repository exists and is accessible"
+        log_warn "SSH connection to GitHub failed. Please verify:"
+        log_warn "1. The deploy key is added to your repository"
+        log_warn "2. Your repository URL is correct"
+        log_warn "3. The repository exists and is accessible"
         echo
         echo "Testing SSH connection manually:"
         echo "$ssh_test_result"
@@ -187,18 +190,18 @@ clone_repository() {
         read -p "Continue anyway? (y/N): " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            error "SSH authentication failed. Please fix the issue and try again."
+            log_error "SSH authentication failed. Please fix the issue and try again."
         fi
     fi
     
     if [[ -d "$INSTALL_DIR/repo/.git" ]]; then
-        log "Repository directory exists, updating..."
+        log_info "Repository directory exists, updating..."
         cd "$INSTALL_DIR/repo"
         # Ensure proper ownership before git operations
         sudo chown -R root:root "$INSTALL_DIR/repo"
         sudo git pull origin main
     else
-        log "Cloning repository: $REPO_URL"
+        log_info "Cloning repository: $REPO_URL"
         # Remove any existing directory that's not a git repo
         if [[ -d "$INSTALL_DIR/repo" ]]; then
             sudo rm -rf "$INSTALL_DIR/repo"
@@ -226,11 +229,11 @@ clone_repository() {
     # Ensure scripts are executable after clone/update
     sudo find "$INSTALL_DIR/repo" -name "*.sh" -type f -exec chmod +x {} \;
     
-    log "Repository cloned/updated"
+    log_info "Repository cloned/updated"
 }
 
 enable_podman_socket() {
-    log "Enabling Podman socket for system services..."
+    log_info "Enabling Podman socket for system services..."
     
     # Enable podman socket for root (system services)
     sudo systemctl enable --now podman.socket
@@ -238,11 +241,11 @@ enable_podman_socket() {
     # Enable user lingering for the management user
     sudo loginctl enable-linger "$USER"
     
-    log "Podman socket enabled"
+    log_info "Podman socket enabled"
 }
 
 install_management_services() {
-    log "Installing management services..."
+    log_info "Installing management services..."
     
     # Copy service files
     sudo cp "$INSTALL_DIR/repo/services/"*.service "$SYSTEMD_DIR/"
@@ -265,60 +268,60 @@ EOF
     
     # Verify services are enabled
     if sudo systemctl is-enabled --quiet gitops-sync.timer; then
-        log "GitOps sync timer enabled successfully"
+        log_info "GitOps sync timer enabled successfully"
     else
-        warn "Failed to enable GitOps sync timer"
+        log_warn "Failed to enable GitOps sync timer"
     fi
     
     if sudo systemctl is-enabled --quiet quadlet-deploy.service; then
-        log "Quadlet deploy service enabled successfully"  
+        log_info "Quadlet deploy service enabled successfully"  
     else
-        warn "Failed to enable quadlet deploy service"
+        log_warn "Failed to enable quadlet deploy service"
     fi
     
-    log "Management services installed"
+    log_info "Management services installed"
 }
 
 configure_selinux() {
-    log "Configuring SELinux contexts..."
+    log_info "Configuring SELinux contexts..."
     
     # Set appropriate SELinux contexts
     sudo restorecon -R "$INSTALL_DIR"
     sudo setsebool -P container_manage_cgroup true
     
-    log "SELinux configured"
+    log_info "SELinux configured"
 }
 
 initial_deployment() {
-    log "Performing initial quadlet deployment..."
+    log_info "Performing initial quadlet deployment..."
     
     if [[ -x "$INSTALL_DIR/repo/scripts/deploy-quadlets.sh" ]]; then
         sudo "$INSTALL_DIR/repo/scripts/deploy-quadlets.sh"
     else
-        warn "Deploy script not found, skipping initial deployment"
+        log_warn "Deploy script not found, skipping initial deployment"
     fi
 }
 
 start_services() {
-    log "Verifying management services..."
+    log_info "Verifying management services..."
     
     # Verify timer status
     if sudo systemctl is-active --quiet gitops-sync.timer; then
-        log "GitOps sync timer is running successfully"
+        log_info "GitOps sync timer is running successfully"
         sudo systemctl status gitops-sync.timer --no-pager --lines=5
     else
-        warn "GitOps sync timer is not running, attempting to start..."
+        log_warn "GitOps sync timer is not running, attempting to start..."
         sudo systemctl start gitops-sync.timer
     fi
     
     # Show timer schedule
     sudo systemctl list-timers gitops-sync.timer --no-pager
     
-    log "Services verification completed"
+    log_info "Services verification completed"
 }
 
 show_status() {
-    log "Installation completed successfully!"
+    log_info "Installation completed successfully!"
     echo
     echo "=== Status ==="
     echo "Install directory: $INSTALL_DIR"
@@ -336,7 +339,7 @@ show_status() {
 }
 
 main() {
-    log "Starting Podman GitOps bootstrap setup..."
+    log_info "Starting Podman GitOps bootstrap setup..."
     
     check_prerequisites
     setup_directories
@@ -350,9 +353,9 @@ main() {
     start_services
     show_status
     
-    log "Bootstrap setup completed successfully"
+    log_info "Bootstrap setup completed successfully"
     echo
-    echo "Setup log saved to: $LOG_FILE"
+    echo "Setup log_info saved to: $LOG_FILE"
 }
 
 # Handle command line arguments
