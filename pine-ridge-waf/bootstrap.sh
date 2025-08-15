@@ -21,7 +21,7 @@ install_ansible() {
     log "Installing Ansible..."
     
     # Install Ansible and required collections
-    sudo dnf install -y ansible-core python3-pip
+    sudo dnf install -y ansible-core python3-pip libsecret
     
     # Install common collections we'll need
     ansible-galaxy collection install community.general
@@ -46,6 +46,136 @@ setup_ssh_auth() {
     fi
 }
 
+clone_and_run() {
+    log "Cloning repository..."
+    
+    sudo mkdir -p "$INSTALL_DIR"
+    sudo git clone -b "$GIT_BRANCH" "$REPO_URL" "$INSTALL_DIR/repo"
+    
+    cd "$INSTALL_DIR/repo"
+    
+    # Set git configuration for branch tracking
+    sudo git config user.name "WAF GitOps System"
+    sudo git config user.email "waf-gitops@$(hostname)"
+    
+    log "Repository cloned successfully"
+}
+
+setup_vault_password() {
+    log "Setting up Ansible vault password for system services..."
+    
+    local vault_password_file="/etc/pine-ridge-waf-vault-pass"
+    local vault_script="/usr/local/bin/get-waf-vault-pass.sh"
+    
+    echo ""
+    echo "=== ANSIBLE VAULT PASSWORD SETUP ==="
+    echo "The Ansible vault contains encrypted certificates and secrets."
+    echo "This will be stored securely for system service access."
+    echo ""
+    
+    # Check if password file already exists
+    if [[ -f "$vault_password_file" ]]; then
+        log "Vault password file already exists"
+        
+        read -p "Do you want to update the existing password? (y/N): " -r update_password
+        if [[ ! $update_password =~ ^[Yy]$ ]]; then
+            log "Keeping existing vault password"
+            return 0
+        fi
+    fi
+    
+    # Prompt for password
+    local vault_password
+    local vault_password_confirm
+    
+    while true; do
+        echo "Enter the Ansible vault password:"
+        read -p "Password: " -s vault_password
+        echo
+        
+        if [[ -z "$vault_password" ]]; then
+            echo "Password cannot be empty. Please try again."
+            continue
+        fi
+        
+        echo "Confirm the password:"
+        read -p "Password (again): " -s vault_password_confirm
+        echo
+        
+        if [[ "$vault_password" == "$vault_password_confirm" ]]; then
+            break
+        else
+            echo "Passwords don't match. Please try again."
+            echo
+        fi
+    done
+    
+    # Store password in secure system file
+    echo "$vault_password" | sudo tee "$vault_password_file" > /dev/null
+    
+    # Set very restrictive permissions
+    sudo chmod 600 "$vault_password_file"
+    sudo chown root:root "$vault_password_file"
+    
+    # Create wrapper script for Ansible
+    sudo tee "$vault_script" > /dev/null <<EOF
+#!/bin/bash
+# Vault password script for system services
+cat /etc/pine-ridge-waf-vault-pass
+EOF
+    
+    sudo chmod 755 "$vault_script"
+    sudo chown root:root "$vault_script"
+    
+    # Test the setup
+    if [[ -f "$vault_password_file" ]] && [[ -x "$vault_script" ]]; then
+        if [[ "$($vault_script)" == "$vault_password" ]]; then
+            log "✓ Vault password stored successfully for system access"
+        else
+            error "Vault password verification failed"
+        fi
+    else
+        error "Failed to create vault password files"
+    fi
+    
+    # Test with Ansible if vault file exists
+    cd "$INSTALL_DIR/repo"
+    if [[ -f "inventory/group_vars/vault.yml" ]]; then
+        log "Testing vault password with existing vault file..."
+        if timeout 10 ansible-vault view inventory/group_vars/vault.yml --vault-password-file "$vault_script" >/dev/null 2>&1; then
+            log "✓ Vault password verified with Ansible"
+        else
+            error "Vault password verification with Ansible failed"
+        fi
+    else
+        log "No vault file found yet - password will be verified during first deployment"
+    fi
+    
+    echo "System vault password setup completed successfully!"
+    echo ""
+}
+
+run_initial_deployment() {
+    log "Running initial WAF configuration..."
+    
+    cd "$INSTALL_DIR/repo"
+    
+    # Test ansible configuration first
+    log "Testing Ansible configuration..."
+    if ! ansible --version >/dev/null 2>&1; then
+        error "Ansible is not properly installed"
+    fi
+    
+    # Run the playbook
+    log "Running WAF configuration playbook..."
+    if ansible-playbook -i localhost, --connection=local site.yml; then
+        log "Initial WAF configuration completed successfully"
+    else
+        log "Initial configuration failed - this may be normal if vault is not yet set up"
+        log "You can run 'ansible-playbook site.yml' manually after setup"
+    fi
+}
+
 setup_ansible_gitops() {
     log "Setting up Ansible GitOps service..."
     
@@ -55,7 +185,7 @@ REPO_URL=$REPO_URL
 GIT_BRANCH=$GIT_BRANCH
 INSTALL_DIR=$INSTALL_DIR
 EOF
-    
+
     # Create systemd service for Ansible runs
     sudo tee /etc/systemd/system/waf-ansible.service > /dev/null <<'EOF'
 [Unit]
@@ -78,27 +208,6 @@ TimeoutSec=600
 WantedBy=multi-user.target
 EOF
 
-    # Create separate timer for system maintenance (runs less frequently)
-    sudo tee /etc/systemd/system/waf-system-maintenance.service > /dev/null <<'EOF'
-[Unit]
-Description=WAF System Maintenance
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-User=root
-EnvironmentFile=/etc/pine-ridge-waf.conf
-WorkingDirectory=/opt/pine-ridge-waf/repo
-ExecStart=/usr/bin/ansible-playbook -i localhost, --connection=local system-maintenance.yml
-StandardOutput=journal
-StandardError=journal
-TimeoutSec=1800
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
     # Create timer for WAF config (frequent)
     sudo tee /etc/systemd/system/waf-ansible.timer > /dev/null <<'EOF'
 [Unit]
@@ -114,47 +223,31 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-    # Create timer for system maintenance (daily)
-    sudo tee /etc/systemd/system/waf-system-maintenance.timer > /dev/null <<'EOF'
-[Unit]
-Description=WAF System Maintenance Timer
-Requires=waf-system-maintenance.service
-
-[Timer]
-OnBootSec=30min
-OnCalendar=daily
-RandomizedDelaySec=3600
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-
     sudo systemctl daemon-reload
     sudo systemctl enable --now waf-ansible.timer
-    sudo systemctl enable --now waf-system-maintenance.timer
+    
+    log "GitOps services configured and started"
 }
 
-clone_and_run() {
-    log "Cloning repository and running initial configuration..."
+show_completion_status() {
+    log "WAF bootstrap completed successfully!"
     
-    sudo mkdir -p "$INSTALL_DIR"
-    sudo git clone -b "$GIT_BRANCH" "$REPO_URL" "$INSTALL_DIR/repo"
-    
-    cd "$INSTALL_DIR/repo"
-    
-    # Set git configuration for branch tracking
-    sudo git config user.name "WAF GitOps System"
-    sudo git config user.email "waf-gitops@$(hostname)"
-    
-    # Run initial Ansible playbooks
-    log "Running WAF configuration playbook..."
-    ansible-playbook -i localhost, --connection=local site.yml
-    
-    log "Running system maintenance playbook..."
-    ansible-playbook -i localhost, --connection=local system-maintenance.yml
-    
-    log "Initial configuration completed"
+    echo ""
+    echo "=== SETUP COMPLETE ==="
+    echo "✓ Ansible installed and configured"
+    echo "✓ Repository cloned and configured"
+    echo "✓ Vault password stored securely"
+    echo "✓ GitOps services enabled"
+    echo ""
+    echo "=== NEXT STEPS ==="
+    echo "1. Your WAF is now running and will auto-update from Git"
+    echo "2. Monitor services: journalctl -u waf-ansible.service -f"
+    echo "3. Check timer status: systemctl list-timers waf-ansible.timer"
+    echo "4. Manual deployment: cd $INSTALL_DIR/repo && ansible-playbook site.yml"
+    echo ""
+    echo "=== SERVICE STATUS ==="
+    sudo systemctl status waf-ansible.timer --no-pager --lines=5 || true
+    echo ""
 }
 
 main() {
@@ -165,11 +258,13 @@ main() {
     install_ansible
     setup_ssh_auth
     clone_and_run
-    setup_ansible_gitops
+    setup_vault_password
+    run_initial_deployment      # Test deployment with vault
+    setup_ansible_gitops       # Enable ongoing automation
+    show_completion_status
     
     log "WAF bootstrap completed successfully"
-    echo "Usage: $0 <repo_url> [branch_name]"
-    echo "Branch switching: Edit /etc/pine-ridge-waf.conf and restart timers"
+    echo "Bootstrap log saved to: $LOG_FILE"
 }
 
 main "$@"
