@@ -33,30 +33,157 @@ install_ansible() {
 setup_ssh_auth() {
     log "Setting up SSH authentication..."
     
-    local ssh_key="/root/.ssh/waf_gitops_ed25519"
+    local ssh_dir="/root/.ssh"
+    local ssh_key="$ssh_dir/waf_gitops_ed25519"
+    local ssh_config="$ssh_dir/config"
     
+    # Create SSH directory if it doesn't exist
+    sudo mkdir -p "$ssh_dir"
+    sudo chmod 700 "$ssh_dir"
+    
+    # Generate SSH key if it doesn't exist
     if [[ ! -f "$ssh_key" ]]; then
+        log "Generating SSH key for GitOps..."
         sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "waf-gitops@$(hostname)"
+        sudo chmod 600 "$ssh_key"
+        sudo chmod 644 "$ssh_key.pub"
         
-        echo "=== ADD THIS DEPLOY KEY TO GITHUB ==="
-        sudo cat "$ssh_key.pub"
-        echo "=================================="
+        log "SSH key generated: $ssh_key.pub"
+    else
+        log "SSH key already exists: $ssh_key"
+        log "Removing existing key and generating new one..."
+        sudo rm -f "$ssh_key" "$ssh_key.pub"
+        sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "waf-gitops@$(hostname)"
+        sudo chmod 600 "$ssh_key"
+        sudo chmod 644 "$ssh_key.pub"
+        log "New SSH key generated: $ssh_key.pub"
+    fi
+    
+    # Always show the SSH key and setup instructions (whether new or existing)
+    echo
+    echo "=== SSH KEY FOR GITHUB ==="
+    echo "Add this SSH public key to your GitHub repository as a deploy key:"
+    echo
+    sudo cat "$ssh_key.pub"
+    echo
+    echo "Steps:"
+    echo "1. Go to your GitHub repo → Settings → Deploy keys"
+    echo "2. Click 'Add deploy key'"
+    echo "3. Give it a title like 'WAF GitOps Server'"
+    echo "4. Paste the above public key"
+    echo "5. Do NOT check 'Allow write access' (read-only is safer)"
+    echo "6. Click 'Add key'"
+    echo
+    
+    # Auto-detect if running interactively or from pipe
+    if [ -t 0 ]; then
+        # Running interactively - can read user input
+        read -p "Press Enter after adding the deploy key to GitHub..."
+    else
+        # Running from pipe (curl | bash) - use simple approach
+        echo "Script is running from pipe. Waiting 90 seconds for you to add the SSH key..."
+        echo "This should be enough time to add the key to GitHub."
+        echo
         
-        read -p "Press Enter after adding the deploy key..."
+        # Count down so user knows what's happening
+        for i in {90..1}; do
+            if [ $((i % 10)) -eq 0 ]; then
+                echo "Waiting... $i seconds remaining"
+            fi
+            sleep 1
+        done
+        
+        echo "Continuing with setup..."
+    fi
+    
+    # Create/update SSH config for GitHub
+    sudo tee "$ssh_config" > /dev/null <<EOF
+# WAF GitOps SSH configuration
+Host github.com
+    HostName github.com
+    User git
+    IdentityFile $ssh_key
+    IdentitiesOnly yes
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    LogLevel ERROR
+EOF
+    
+    sudo chmod 600 "$ssh_config"
+}
+
+convert_repo_url_to_ssh() {
+    # Convert HTTPS GitHub URLs to SSH format
+    if [[ "$REPO_URL" =~ ^https://github\.com/(.+)\.git$ ]]; then
+        REPO_URL="git@github.com:${BASH_REMATCH[1]}.git"
+        log "Converted repository URL to SSH format: $REPO_URL"
+    elif [[ "$REPO_URL" =~ ^https://github\.com/(.+)$ ]]; then
+        REPO_URL="git@github.com:${BASH_REMATCH[1]}.git"
+        log "Converted repository URL to SSH format: $REPO_URL"
     fi
 }
 
 clone_and_run() {
     log "Cloning repository..."
     
-    sudo mkdir -p "$INSTALL_DIR"
-    sudo git clone -b "$GIT_BRANCH" "$REPO_URL" "$INSTALL_DIR/repo"
+    # Test SSH connection first
+    local ssh_test_result
+    ssh_test_result=$(sudo ssh -T git@github.com 2>&1 || true)
+    
+    if echo "$ssh_test_result" | grep -q "You've successfully authenticated, but GitHub does not provide shell access"; then
+        log "SSH connection to GitHub verified successfully"
+    else
+        log "SSH connection to GitHub failed. Please verify:"
+        log "1. The deploy key is added to your repository"
+        log "2. Your repository URL is correct"
+        log "3. The repository exists and is accessible"
+        echo
+        echo "Testing SSH connection manually:"
+        echo "$ssh_test_result"
+        echo
+        
+        # Auto-detect if running interactively or from pipe for error handling
+        if [ -t 0 ]; then
+            read -p "Continue anyway? (y/N): " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                error "SSH authentication failed. Please fix the issue and try again."
+            fi
+        else
+            log "Script running from pipe - continuing despite SSH warning..."
+            log "If deployment fails, verify SSH key setup and try again"
+        fi
+    fi
+    
+    if [[ -d "$INSTALL_DIR/repo/.git" ]]; then
+        log "Repository directory exists, updating..."
+        cd "$INSTALL_DIR/repo"
+        # Ensure proper ownership before git operations
+        sudo chown -R root:root "$INSTALL_DIR/repo"
+        sudo git pull origin main || sudo git pull origin master
+    else
+        log "Cloning repository: $REPO_URL"
+        # Remove any existing directory that's not a git repo
+        if [[ -d "$INSTALL_DIR/repo" ]]; then
+            sudo rm -rf "$INSTALL_DIR/repo"
+        fi
+        sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+    fi
     
     cd "$INSTALL_DIR/repo"
     
     # Set git configuration for branch tracking
     sudo git config user.name "WAF GitOps System"
     sudo git config user.email "waf-gitops@$(hostname)"
+    
+    # Disable filemode tracking to prevent permission conflicts
+    sudo git config core.filemode false
+    
+    # Disable git hooks during service operations to prevent permission conflicts
+    sudo git config core.hooksPath /dev/null
+    
+    # Ensure scripts are executable after clone/update
+    sudo find "$INSTALL_DIR/repo" -name "*.sh" -type f -exec chmod +x {} \;
     
     log "Repository cloned successfully"
 }
@@ -256,6 +383,7 @@ main() {
     log "Branch: $GIT_BRANCH"
     
     install_ansible
+    convert_repo_url_to_ssh
     setup_ssh_auth
     clone_and_run
     setup_vault_password
