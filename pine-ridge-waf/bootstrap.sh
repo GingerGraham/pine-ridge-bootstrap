@@ -41,23 +41,18 @@ setup_ssh_auth() {
     sudo mkdir -p "$ssh_dir"
     sudo chmod 700 "$ssh_dir"
     
-    # Generate SSH key if it doesn't exist
-    if [[ ! -f "$ssh_key" ]]; then
-        log "Generating SSH key for GitOps..."
-        sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "waf-gitops@$(hostname)"
-        sudo chmod 600 "$ssh_key"
-        sudo chmod 644 "$ssh_key.pub"
-        
-        log "SSH key generated: $ssh_key.pub"
-    else
-        log "SSH key already exists: $ssh_key"
-        log "Removing existing key and generating new one..."
+    # Generate SSH key (always regenerate for consistency)
+    if [[ -f "$ssh_key" ]]; then
+        log "SSH key already exists, removing and generating new one..."
         sudo rm -f "$ssh_key" "$ssh_key.pub"
-        sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "waf-gitops@$(hostname)"
-        sudo chmod 600 "$ssh_key"
-        sudo chmod 644 "$ssh_key.pub"
-        log "New SSH key generated: $ssh_key.pub"
     fi
+    
+    log "Generating SSH key for GitOps..."
+    sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "waf-gitops@$(hostname)"
+    sudo chmod 600 "$ssh_key"
+    sudo chmod 644 "$ssh_key.pub"
+    
+    log "SSH key generated: $ssh_key.pub"
     
     # Always show the SSH key and setup instructions (whether new or existing)
     echo
