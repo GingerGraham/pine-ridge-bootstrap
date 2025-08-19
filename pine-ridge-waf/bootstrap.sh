@@ -6,7 +6,10 @@ set -euo pipefail
 REPO_URL="${1:-https://github.com/yourusername/pine-ridge-waf.git}"
 GIT_BRANCH="${2:-main}"
 INSTALL_DIR="/opt/pine-ridge-waf"
-LOG_FILE="/tmp/waf-bootstrap.log"
+LOG_FILE="/tmp/waf-bootstrap-$(date +%s).log"
+
+# Ensure log file is writable
+touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/dev/null"
 
 log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
@@ -45,8 +48,18 @@ setup_ssh_auth() {
     log "Removing any existing SSH keys..."
     sudo rm -f "$ssh_key" "$ssh_key.pub"
     
+    # Verify removal worked
+    if [[ -f "$ssh_key" ]]; then
+        log "Warning: SSH key file still exists after removal attempt"
+        sudo chmod 666 "$ssh_key" 2>/dev/null || true
+        sudo rm -f "$ssh_key"
+    fi
+    
     log "Generating SSH key for GitOps..."
-    sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "waf-gitops@$(hostname)" -q
+    # Use yes to automatically answer prompts and redirect to avoid issues
+    echo | sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "waf-gitops@$(hostname)" 2>/dev/null || \
+    sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "waf-gitops@$(hostname)" < /dev/null
+    
     sudo chmod 600 "$ssh_key"
     sudo chmod 644 "$ssh_key.pub"
     
