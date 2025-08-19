@@ -286,51 +286,61 @@ setup_vault_password() {
                 read -p "Do you want to update the existing password? (y/N): " -r update_password
                 if [[ ! $update_password =~ ^[Yy]$ ]]; then
                     log "Keeping existing vault password"
-                    return 0
+                    # Set vault_password to the existing one for later verification
+                    vault_password="$current_password"
+                    # Don't return - continue to ensure proper group setup
+                else
+                    # User wants to update - clear the flag so we'll prompt for new password
+                    current_password=""
                 fi
             else
                 log "Script running from pipe - keeping existing vault password"
-                return 0
+                # Set vault_password to the existing one for later verification  
+                vault_password="$current_password"
+                # Don't return - continue to ensure proper group setup
             fi
         fi
     fi
     
-    # Auto-detect if running interactively or from pipe for password input
-    if [ -t 0 ] || [[ "${FORCE_INTERACTIVE:-false}" == "true" ]]; then
-        # Running interactively - can read user input
-        local vault_password
-        local vault_password_confirm
-        
-        while true; do
-            echo "Enter the Ansible vault password:"
-            read -p "Password: " -s vault_password < /dev/tty
-            echo
+    # Only prompt for new password if we don't have one or user wants to update
+    if [[ -z "${vault_password:-}" ]] || [[ "${current_password:-}" == "VAULT_PASSWORD_NOT_SET" ]] || [[ -z "${current_password:-}" ]]; then
+        # Auto-detect if running interactively or from pipe for password input
+        if [ -t 0 ] || [[ "${FORCE_INTERACTIVE:-false}" == "true" ]]; then
+            # Running interactively - can read user input
+            local vault_password_input
+            local vault_password_confirm
             
-            if [[ -z "$vault_password" ]]; then
-                echo "Password cannot be empty. Please try again."
-                continue
-            fi
-            
-            echo "Confirm the password:"
-            read -p "Password (again): " -s vault_password_confirm < /dev/tty
-            echo
-            
-            if [[ "$vault_password" == "$vault_password_confirm" ]]; then
-                break
-            else
-                echo "Passwords don't match. Please try again."
+            while true; do
+                echo "Enter the Ansible vault password:"
+                read -p "Password: " -s vault_password_input < /dev/tty
                 echo
-            fi
-        done
-    else
-        # Running from pipe - skip password setup for now
-        log "Script running from pipe - skipping vault password setup"
-        log "You can set up the vault password later by running:"
-        log "  sudo /opt/pine-ridge-waf/repo/scripts/setup-vault-password.sh"
-        
-        # Create placeholder files for now
-        echo "VAULT_PASSWORD_NOT_SET" | sudo tee "$vault_password_file" > /dev/null
-        vault_password="VAULT_PASSWORD_NOT_SET"
+                
+                if [[ -z "$vault_password_input" ]]; then
+                    echo "Password cannot be empty. Please try again."
+                    continue
+                fi
+                
+                echo "Confirm the password:"
+                read -p "Password (again): " -s vault_password_confirm < /dev/tty
+                echo
+                
+                if [[ "$vault_password_input" == "$vault_password_confirm" ]]; then
+                    vault_password="$vault_password_input"
+                    break
+                else
+                    echo "Passwords don't match. Please try again."
+                    echo
+                fi
+            done
+        else
+            # Running from pipe - skip password setup for now
+            log "Script running from pipe - skipping vault password setup"
+            log "You can set up the vault password later by running:"
+            log "  sudo /opt/pine-ridge-waf/repo/scripts/setup-vault-password.sh"
+            
+            # Create placeholder files for now
+            vault_password="VAULT_PASSWORD_NOT_SET"
+        fi
     fi
     
     # Store password in secure system file (if we have one)
