@@ -20,6 +20,36 @@ error() {
     exit 1
 }
 
+check_prerequisites() {
+    log "Checking prerequisites..."
+    
+    # Check if running as non-root with sudo
+    if [[ $EUID -eq 0 ]]; then
+        error "This script should not be run as root. Run as a user with sudo privileges."
+    fi
+    
+    # Check sudo access
+    if ! sudo -n true 2>/dev/null; then
+        error "This script requires sudo privileges. Please run with a user in the wheel group."
+    fi
+    
+    # Check if git is installed, install if missing
+    if ! command -v git &> /dev/null; then
+        log "Git not found, installing..."
+        sudo dnf install -y git
+    else
+        log "Git is already installed"
+    fi
+    
+    # Check if curl is installed (usually present but good to verify)
+    if ! command -v curl &> /dev/null; then
+        log "curl not found, installing..."
+        sudo dnf install -y curl
+    fi
+    
+    log "Prerequisites check completed"
+}
+
 install_ansible() {
     log "Installing Ansible..."
     
@@ -388,6 +418,7 @@ main() {
     log "Repository: $REPO_URL"
     log "Branch: $GIT_BRANCH"
     
+    check_prerequisites
     install_ansible
     convert_repo_url_to_ssh
     setup_ssh_auth
