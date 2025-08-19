@@ -173,7 +173,10 @@ The script handles vault password setup differently depending on how it's execut
 **Interactive Mode (Console, SSH with --interactive flag):**
 - Prompts you to enter the Ansible vault password interactively
 - Confirms the password to prevent typos
-- Stores it securely in `/etc/pine-ridge-waf-vault-pass` with root-only access
+- Stores it securely in `/etc/pine-ridge-waf-vault-pass` with group-based access
+- Creates a `waf-vault` group and adds the current user to it
+- Automatically tests if group membership is immediately active
+- **Note**: If group access isn't immediately active, you can run `newgrp waf-vault` or log out/in
 
 **Non-Interactive Mode (curl | bash without --interactive):**
 - Skips interactive password prompts to avoid hanging
@@ -260,8 +263,17 @@ sudo ansible-vault view /opt/pine-ridge-waf/repo/inventory/group_vars/vault.yml
 # Check if vault password is set properly
 sudo cat /etc/pine-ridge-waf-vault-pass
 
+# Check vault file permissions and group membership
+ls -la /etc/pine-ridge-waf-vault-pass
+groups
+
 # If you see "VAULT_PASSWORD_NOT_SET", run the script in interactive mode:
 curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+
+# If you get permission denied errors:
+# 1. Check if you're in the waf-vault group: groups
+# 2. If not in the group, log out and back in, or run: newgrp waf-vault
+# 3. If still having issues, check file permissions: ls -la /etc/pine-ridge-waf-vault-pass
 ```
 
 **Interactive Mode Not Working:**

@@ -338,9 +338,18 @@ setup_vault_password() {
         echo "$vault_password" | sudo tee "$vault_password_file" > /dev/null
     fi
     
-    # Set very restrictive permissions
-    sudo chmod 600 "$vault_password_file"
-    sudo chown root:root "$vault_password_file"
+    # Create a group for vault access and add the current user
+    if ! getent group waf-vault >/dev/null 2>&1; then
+        sudo groupadd waf-vault
+    fi
+    sudo usermod -a -G waf-vault "$USER"
+    
+    # Activate the group membership immediately
+    log "Activating waf-vault group membership..."
+    
+    # Set permissions: owner=root, group=waf-vault, readable by group
+    sudo chown root:waf-vault "$vault_password_file"
+    sudo chmod 640 "$vault_password_file"
     
     # Create wrapper script for Ansible
     sudo tee "$vault_script" > /dev/null <<EOF
@@ -358,6 +367,13 @@ EOF
             # Only verify if we have a real password
             if [[ "$(sudo "$vault_script")" == "$vault_password" ]]; then
                 log "✓ Vault password stored successfully for system access"
+                
+                # Test if current user can access vault file directly (group membership active)
+                if [[ -r "$vault_password_file" ]]; then
+                    log "✓ Vault file is accessible to current user"
+                else
+                    log "⚠ Group membership not yet active - will work after logout/login or newgrp"
+                fi
             else
                 error "Vault password verification failed"
             fi
@@ -473,13 +489,32 @@ show_completion_status() {
     echo "✓ Vault password stored securely"
     echo "✓ GitOps services enabled"
     echo ""
+    
+    # Check if vault access is immediately available
+    local vault_access_note=""
+    if [[ -f "/etc/pine-ridge-waf-vault-pass" ]]; then
+        if [[ -r "/etc/pine-ridge-waf-vault-pass" ]]; then
+            vault_access_note="✓ Vault access is ready"
+        else
+            vault_access_note="⚠ To activate vault access, run: newgrp waf-vault"
+        fi
+    fi
+    
     echo "=== NEXT STEPS ==="
-    echo "1. Set up vault password if not done: sudo $INSTALL_DIR/repo/scripts/setup-vault-password.sh (if available)"
-    echo "   OR run bootstrap again with: curl -sSL <url> | bash -s -- --interactive <repo>"
-    echo "2. Your WAF will auto-update from Git every 10 minutes"
-    echo "3. Monitor services: journalctl -u waf-ansible.service -f"
-    echo "4. Check timer status: systemctl list-timers waf-ansible.timer"
-    echo "5. Manual deployment: cd $INSTALL_DIR/repo && ansible-playbook site.yml"
+    if [[ -n "$vault_access_note" ]]; then
+        echo "1. $vault_access_note"
+        echo "2. Your WAF will auto-update from Git every 10 minutes"
+        echo "3. Monitor services: journalctl -u waf-ansible.service -f"
+        echo "4. Check timer status: systemctl list-timers waf-ansible.timer"
+        echo "5. Manual deployment: cd $INSTALL_DIR/repo && ansible-playbook site.yml"
+    else
+        echo "1. Set up vault password if not done: sudo $INSTALL_DIR/repo/scripts/setup-vault-password.sh (if available)"
+        echo "   OR run bootstrap again with: curl -sSL <url> | bash -s -- --interactive <repo>"
+        echo "2. Your WAF will auto-update from Git every 10 minutes"
+        echo "3. Monitor services: journalctl -u waf-ansible.service -f"
+        echo "4. Check timer status: systemctl list-timers waf-ansible.timer"
+        echo "5. Manual deployment: cd $INSTALL_DIR/repo && ansible-playbook site.yml"
+    fi
     echo ""
     echo "=== SERVICE STATUS ==="
     sudo systemctl status waf-ansible.timer --no-pager --lines=5 || true
