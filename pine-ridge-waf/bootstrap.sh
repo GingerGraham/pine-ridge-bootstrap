@@ -288,7 +288,7 @@ setup_vault_password() {
             # Auto-detect if running interactively or from pipe
             if [ -t 0 ] || [[ "${FORCE_INTERACTIVE:-false}" == "true" ]]; then
                 log "Running in interactive mode - prompting for password update"
-                read -p "Do you want to update the existing password? (y/N): " -r update_password
+                read -p "Do you want to update the existing password? (y/N): " -r update_password < /dev/tty
                 if [[ ! $update_password =~ ^[Yy]$ ]]; then
                     log "Keeping existing vault password"
                     # Set vault_password to the existing one for later verification
