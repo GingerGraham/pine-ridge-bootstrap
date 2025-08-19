@@ -191,18 +191,51 @@ clone_and_run() {
         fi
     fi
     
-    if [[ -d "$INSTALL_DIR/repo/.git" ]]; then
-        log "Repository directory exists, updating..."
-        cd "$INSTALL_DIR/repo"
-        # Ensure proper ownership before git operations
-        sudo chown -R root:root "$INSTALL_DIR/repo"
-        sudo git pull origin main || sudo git pull origin master
+    # Create install directory if it doesn't exist
+    sudo mkdir -p "$INSTALL_DIR"
+    
+    # Handle existing repository more robustly
+    if [[ -d "$INSTALL_DIR/repo" ]]; then
+        if [[ -d "$INSTALL_DIR/repo/.git" ]]; then
+            log "Repository directory exists, updating..."
+            cd "$INSTALL_DIR/repo"
+            
+            # Ensure proper ownership before git operations
+            sudo chown -R root:root "$INSTALL_DIR/repo"
+            
+            # Check if we can access the remote
+            if sudo git remote get-url origin >/dev/null 2>&1; then
+                current_remote=$(sudo git remote get-url origin)
+                if [[ "$current_remote" == "$REPO_URL" ]]; then
+                    log "Updating existing repository..."
+                    sudo git fetch origin
+                    sudo git reset --hard origin/main 2>/dev/null || sudo git reset --hard origin/master 2>/dev/null || {
+                        log "Failed to reset to remote branch, re-cloning..."
+                        cd /
+                        sudo rm -rf "$INSTALL_DIR/repo"
+                        sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+                    }
+                else
+                    log "Repository URL mismatch, re-cloning..."
+                    log "Current: $current_remote"
+                    log "Expected: $REPO_URL"
+                    cd /
+                    sudo rm -rf "$INSTALL_DIR/repo"
+                    sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+                fi
+            else
+                log "Cannot access remote, re-cloning..."
+                cd /
+                sudo rm -rf "$INSTALL_DIR/repo"
+                sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+            fi
+        else
+            log "Directory exists but is not a git repository, removing and cloning..."
+            sudo rm -rf "$INSTALL_DIR/repo"
+            sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+        fi
     else
         log "Cloning repository: $REPO_URL"
-        # Remove any existing directory that's not a git repo
-        if [[ -d "$INSTALL_DIR/repo" ]]; then
-            sudo rm -rf "$INSTALL_DIR/repo"
-        fi
         sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
     fi
     
@@ -240,41 +273,61 @@ setup_vault_password() {
     if [[ -f "$vault_password_file" ]]; then
         log "Vault password file already exists"
         
-        read -p "Do you want to update the existing password? (y/N): " -r update_password
-        if [[ ! $update_password =~ ^[Yy]$ ]]; then
-            log "Keeping existing vault password"
+        # Auto-detect if running interactively or from pipe
+        if [ -t 0 ]; then
+            read -p "Do you want to update the existing password? (y/N): " -r update_password
+            if [[ ! $update_password =~ ^[Yy]$ ]]; then
+                log "Keeping existing vault password"
+                return 0
+            fi
+        else
+            log "Script running from pipe - keeping existing vault password"
             return 0
         fi
     fi
     
-    # Prompt for password
-    local vault_password
-    local vault_password_confirm
-    
-    while true; do
-        echo "Enter the Ansible vault password:"
-        read -p "Password: " -s vault_password
-        echo
+    # Auto-detect if running interactively or from pipe for password input
+    if [ -t 0 ]; then
+        # Running interactively - can read user input
+        local vault_password
+        local vault_password_confirm
         
-        if [[ -z "$vault_password" ]]; then
-            echo "Password cannot be empty. Please try again."
-            continue
-        fi
-        
-        echo "Confirm the password:"
-        read -p "Password (again): " -s vault_password_confirm
-        echo
-        
-        if [[ "$vault_password" == "$vault_password_confirm" ]]; then
-            break
-        else
-            echo "Passwords don't match. Please try again."
+        while true; do
+            echo "Enter the Ansible vault password:"
+            read -p "Password: " -s vault_password < /dev/tty
             echo
-        fi
-    done
+            
+            if [[ -z "$vault_password" ]]; then
+                echo "Password cannot be empty. Please try again."
+                continue
+            fi
+            
+            echo "Confirm the password:"
+            read -p "Password (again): " -s vault_password_confirm < /dev/tty
+            echo
+            
+            if [[ "$vault_password" == "$vault_password_confirm" ]]; then
+                break
+            else
+                echo "Passwords don't match. Please try again."
+                echo
+            fi
+        done
+    else
+        # Running from pipe - skip password setup for now
+        log "Script running from pipe - skipping vault password setup"
+        log "You can set up the vault password later by running:"
+        log "  sudo /opt/pine-ridge-waf/repo/scripts/setup-vault-password.sh"
+        
+        # Create placeholder files for now
+        echo "VAULT_PASSWORD_NOT_SET" | sudo tee "$vault_password_file" > /dev/null
+        vault_password="VAULT_PASSWORD_NOT_SET"
+    fi
     
-    # Store password in secure system file
-    echo "$vault_password" | sudo tee "$vault_password_file" > /dev/null
+    # Store password in secure system file (if we have one)
+    if [[ "$vault_password" != "VAULT_PASSWORD_NOT_SET" ]]; then
+        echo "$vault_password" | sudo tee "$vault_password_file" > /dev/null
+    fi
     
     # Set very restrictive permissions
     sudo chmod 600 "$vault_password_file"
