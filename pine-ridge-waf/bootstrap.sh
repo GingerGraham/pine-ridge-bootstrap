@@ -3,8 +3,8 @@
 
 set -euo pipefail
 
-REPO_URL="${1:-https://github.com/yourusername/pine-ridge-waf.git}"
-GIT_BRANCH="${2:-main}"
+REPO_URL="https://github.com/yourusername/pine-ridge-waf.git"
+GIT_BRANCH="main"
 INSTALL_DIR="/opt/pine-ridge-waf"
 LOG_FILE="/tmp/waf-bootstrap-$(date +%s).log"
 
@@ -549,6 +549,7 @@ main() {
     log "Branch: $GIT_BRANCH"
     log "FORCE_INTERACTIVE: ${FORCE_INTERACTIVE:-false}"
     log "Command line args: $*"
+    log "DEBUG: \$1='${1:-}', \$2='${2:-}', \$3='${3:-}'"
     
     check_prerequisites
     install_ansible
@@ -588,6 +589,7 @@ case "${1:-}" in
         fi
         if [[ -n "${1:-}" ]]; then
             GIT_BRANCH="$1"
+            shift
         fi
         ;;
     *)
@@ -597,6 +599,7 @@ case "${1:-}" in
         fi
         if [[ -n "${1:-}" ]]; then
             GIT_BRANCH="$1"
+            shift
         fi
         ;;
 esac
