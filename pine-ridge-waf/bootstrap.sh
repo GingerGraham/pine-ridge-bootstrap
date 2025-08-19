@@ -348,11 +348,18 @@ setup_vault_password() {
         echo "$vault_password" | sudo tee "$vault_password_file" > /dev/null
     fi
     
+    log "Setting up vault access group and permissions..."
+    
     # Create a group for vault access and add the current user
     if ! getent group waf-vault >/dev/null 2>&1; then
         sudo groupadd waf-vault
+        log "Created waf-vault group"
+    else
+        log "waf-vault group already exists"
     fi
+    
     sudo usermod -a -G waf-vault "$USER"
+    log "Added $USER to waf-vault group"
     
     # Activate the group membership immediately
     log "Activating waf-vault group membership..."
