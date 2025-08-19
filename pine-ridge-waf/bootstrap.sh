@@ -271,23 +271,32 @@ setup_vault_password() {
     
     # Check if password file already exists
     if [[ -f "$vault_password_file" ]]; then
-        log "Vault password file already exists"
+        # Check if it's a placeholder password
+        local current_password
+        current_password=$(sudo cat "$vault_password_file" 2>/dev/null || echo "")
         
-        # Auto-detect if running interactively or from pipe
-        if [ -t 0 ]; then
-            read -p "Do you want to update the existing password? (y/N): " -r update_password
-            if [[ ! $update_password =~ ^[Yy]$ ]]; then
-                log "Keeping existing vault password"
+        if [[ "$current_password" == "VAULT_PASSWORD_NOT_SET" ]]; then
+            log "Found placeholder vault password - need to set real password"
+            # Don't return early - force password setup below
+        else
+            log "Vault password file already exists with real password"
+            
+            # Auto-detect if running interactively or from pipe
+            if [ -t 0 ] || [[ "${FORCE_INTERACTIVE:-false}" == "true" ]]; then
+                read -p "Do you want to update the existing password? (y/N): " -r update_password
+                if [[ ! $update_password =~ ^[Yy]$ ]]; then
+                    log "Keeping existing vault password"
+                    return 0
+                fi
+            else
+                log "Script running from pipe - keeping existing vault password"
                 return 0
             fi
-        else
-            log "Script running from pipe - keeping existing vault password"
-            return 0
         fi
     fi
     
     # Auto-detect if running interactively or from pipe for password input
-    if [ -t 0 ]; then
+    if [ -t 0 ] || [[ "${FORCE_INTERACTIVE:-false}" == "true" ]]; then
         # Running interactively - can read user input
         local vault_password
         local vault_password_confirm
@@ -465,10 +474,12 @@ show_completion_status() {
     echo "✓ GitOps services enabled"
     echo ""
     echo "=== NEXT STEPS ==="
-    echo "1. Your WAF is now running and will auto-update from Git"
-    echo "2. Monitor services: journalctl -u waf-ansible.service -f"
-    echo "3. Check timer status: systemctl list-timers waf-ansible.timer"
-    echo "4. Manual deployment: cd $INSTALL_DIR/repo && ansible-playbook site.yml"
+    echo "1. Set up vault password if not done: sudo $INSTALL_DIR/repo/scripts/setup-vault-password.sh (if available)"
+    echo "   OR run bootstrap again with: curl -sSL <url> | bash -s -- --interactive <repo>"
+    echo "2. Your WAF will auto-update from Git every 10 minutes"
+    echo "3. Monitor services: journalctl -u waf-ansible.service -f"
+    echo "4. Check timer status: systemctl list-timers waf-ansible.timer"
+    echo "5. Manual deployment: cd $INSTALL_DIR/repo && ansible-playbook site.yml"
     echo ""
     echo "=== SERVICE STATUS ==="
     sudo systemctl status waf-ansible.timer --no-pager --lines=5 || true
@@ -493,5 +504,42 @@ main() {
     log "WAF bootstrap completed successfully"
     echo "Bootstrap log saved to: $LOG_FILE"
 }
+
+# Handle command line arguments
+FORCE_INTERACTIVE=false
+case "${1:-}" in
+    --help|-h)
+        echo "Usage: $0 [OPTIONS] [REPO_URL] [BRANCH]"
+        echo "Options:"
+        echo "  --interactive, -i    Force interactive mode for vault password setup"
+        echo "  --help, -h          Show this help message"
+        echo ""
+        echo "Examples:"
+        echo "  $0 https://github.com/yourusername/pine-ridge-waf.git"
+        echo "  $0 --interactive https://github.com/yourusername/pine-ridge-waf.git"
+        echo "  $0 https://github.com/yourusername/pine-ridge-waf.git develop"
+        exit 0
+        ;;
+    --interactive|-i)
+        FORCE_INTERACTIVE=true
+        shift
+        if [[ -n "${1:-}" ]]; then
+            REPO_URL="$1"
+            shift
+        fi
+        if [[ -n "${1:-}" ]]; then
+            GIT_BRANCH="$1"
+        fi
+        ;;
+    *)
+        if [[ -n "${1:-}" ]]; then
+            REPO_URL="$1"
+            shift
+        fi
+        if [[ -n "${1:-}" ]]; then
+            GIT_BRANCH="$1"
+        fi
+        ;;
+esac
 
 main "$@"

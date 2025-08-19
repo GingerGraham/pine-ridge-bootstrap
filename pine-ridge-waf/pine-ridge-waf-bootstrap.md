@@ -1,10 +1,41 @@
-# Pine Ridge WAF Bootstrap
+# Pine Ridge WAF Bootstrap <!-- omit in toc -->
 
 This bootstrap script configures a Linux server to deploy and manage a Web Application Firewall (WAF) using Ansible in a GitOps style. The script sets up automated deployment of WAF configurations, SSL certificates, and security policies from a private GitHub repository.
 
 The design intention here is that the WAF configuration repo is a private GitHub repository and this bootstrap script generates a deploy key for the host to use to pull the repo. The deploy key is then added to the repo as a deploy key manually for secure, automated access.
 
 This bootstrap script is highly opinionated to the design requirements of the Pine Ridge WAF project and may not be suitable for other use cases.
+
+## Table Of Contents <!-- omit in toc -->
+
+- [What This Script Does](#what-this-script-does)
+- [Prerequisites](#prerequisites)
+- [Usage](#usage)
+  - [Basic Usage (Recommended)](#basic-usage-recommended)
+  - [Interactive Mode for SSH Sessions](#interactive-mode-for-ssh-sessions)
+  - [Advanced Usage with Custom Branch](#advanced-usage-with-custom-branch)
+  - [Interactive Mode with Custom Branch](#interactive-mode-with-custom-branch)
+  - [Local Execution](#local-execution)
+  - [Command Line Options](#command-line-options)
+- [When to Use Each Method](#when-to-use-each-method)
+  - [🖥️ **IP KVM Console (Production Servers)**](#️-ip-kvm-console-production-servers)
+  - [🔐 **SSH Sessions (Remote Management)**](#-ssh-sessions-remote-management)
+  - [🤖 **Automated Deployment (CI/CD, Scripts)**](#-automated-deployment-cicd-scripts)
+  - [🔧 **Development/Testing**](#-developmenttesting)
+  - [🔄 **Re-running After Partial Setup**](#-re-running-after-partial-setup)
+- [Setup Process](#setup-process)
+  - [1. SSH Key Generation and GitHub Setup](#1-ssh-key-generation-and-github-setup)
+  - [2. Ansible Vault Password Setup](#2-ansible-vault-password-setup)
+  - [3. Automated Services Configuration](#3-automated-services-configuration)
+- [Post-Installation](#post-installation)
+  - [Monitoring and Management](#monitoring-and-management)
+  - [File Locations](#file-locations)
+  - [Important Notes](#important-notes)
+  - [Troubleshooting](#troubleshooting)
+- [Security Considerations](#security-considerations)
+- [Repository Structure Requirements](#repository-structure-requirements)
+- [Support](#support)
+
 
 ## What This Script Does
 
@@ -33,10 +64,24 @@ The bootstrap script performs the following operations:
 curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- https://github.com/GingerGraham/pine-ridge-waf.git
 ```
 
+### Interactive Mode for SSH Sessions
+
+When running the script via SSH or when you need to ensure interactive prompts work:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+```
+
 ### Advanced Usage with Custom Branch
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- https://github.com/GingerGraham/pine-ridge-waf.git develop
+```
+
+### Interactive Mode with Custom Branch
+
+```bash
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git develop
 ```
 
 ### Local Execution
@@ -50,7 +95,56 @@ chmod +x bootstrap.sh
 
 # Run with your repository URL
 ./bootstrap.sh https://github.com/GingerGraham/pine-ridge-waf.git
+
+# Or with interactive mode
+./bootstrap.sh --interactive https://github.com/GingerGraham/pine-ridge-waf.git
 ```
+
+### Command Line Options
+
+```bash
+# Show help
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --help
+
+# Available options:
+#   --interactive, -i    Force interactive mode for vault password setup
+#   --help, -h          Show help message
+```
+
+## When to Use Each Method
+
+### 🖥️ **IP KVM Console (Production Servers)**
+Use the basic method - the script will automatically detect console interaction:
+```bash
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- https://github.com/GingerGraham/pine-ridge-waf.git
+```
+
+### 🔐 **SSH Sessions (Remote Management)**
+Use interactive mode to ensure vault password prompts work correctly:
+```bash
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+```
+
+### 🤖 **Automated Deployment (CI/CD, Scripts)**
+Use basic mode - vault password setup will be skipped and can be configured later:
+```bash
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- https://github.com/GingerGraham/pine-ridge-waf.git
+```
+
+### 🔧 **Development/Testing**
+Download and run locally for easier debugging:
+```bash
+wget https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh
+chmod +x bootstrap.sh
+./bootstrap.sh --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+```
+
+### 🔄 **Re-running After Partial Setup**
+The script intelligently handles partial completions:
+- **Existing SSH keys**: Automatically regenerated
+- **Existing repository**: Updated or re-cloned as needed
+- **Placeholder vault password**: Will prompt for real password in interactive mode
+- **Real vault password**: Will ask if you want to update it
 
 ## Setup Process
 
@@ -74,11 +168,32 @@ During the bootstrap process, the script will:
 
 ### 2. Ansible Vault Password Setup
 
-The script will prompt you to enter the Ansible vault password:
+The script handles vault password setup differently depending on how it's executed:
 
-- This password is used to decrypt sensitive configuration files
-- It's stored securely in `/etc/pine-ridge-waf-vault-pass` with root-only access
-- The password is used by automated services for unattended deployments
+**Interactive Mode (Console, SSH with --interactive flag):**
+- Prompts you to enter the Ansible vault password interactively
+- Confirms the password to prevent typos
+- Stores it securely in `/etc/pine-ridge-waf-vault-pass` with root-only access
+
+**Non-Interactive Mode (curl | bash without --interactive):**
+- Skips interactive password prompts to avoid hanging
+- Creates a placeholder password file
+- Provides instructions for setting up the password later
+
+**Re-running the Script:**
+- Detects if a placeholder password exists and prompts for a real one (when interactive)
+- Asks if you want to update an existing real password
+- Automatically handles existing vault configurations
+
+**Manual Setup Later:**
+If the script ran in non-interactive mode, you can set up the vault password later by:
+```bash
+# Re-run with interactive mode
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+
+# Or use a setup script (if available in your repository)
+sudo /opt/pine-ridge-waf/repo/scripts/setup-vault-password.sh
+```
 
 ### 3. Automated Services Configuration
 
@@ -120,7 +235,14 @@ sudo ansible-playbook site.yml
 - **Configuration File**: `/etc/pine-ridge-waf.conf`
 - **Vault Password**: `/etc/pine-ridge-waf-vault-pass`
 - **SSH Deploy Key**: `/root/.ssh/waf_gitops_ed25519`
-- **Bootstrap Log**: `/tmp/waf-bootstrap.log`
+- **Bootstrap Log**: `/tmp/waf-bootstrap-<timestamp>.log`
+
+### Important Notes
+
+- **Script Re-execution**: The script can be safely run multiple times and will handle existing installations intelligently
+- **Vault Password**: If the script runs in non-interactive mode, it creates a placeholder password that needs to be updated later
+- **SSH Keys**: Deploy keys are automatically regenerated on each run to ensure consistency
+- **Repository Updates**: Existing repository clones are updated rather than replaced when possible
 
 ### Troubleshooting
 
@@ -134,6 +256,35 @@ sudo ssh -T git@github.com
 ```bash
 # Test vault password
 sudo ansible-vault view /opt/pine-ridge-waf/repo/inventory/group_vars/vault.yml
+
+# Check if vault password is set properly
+sudo cat /etc/pine-ridge-waf-vault-pass
+
+# If you see "VAULT_PASSWORD_NOT_SET", run the script in interactive mode:
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+```
+
+**Interactive Mode Not Working:**
+```bash
+# If running via SSH and prompts don't appear, try:
+# 1. Download and run locally
+wget https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh
+chmod +x bootstrap.sh
+./bootstrap.sh --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+
+# 2. Or use explicit interactive flag with curl
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+```
+
+**Re-running After Failures:**
+```bash
+# The script handles partial completions gracefully and can be re-run safely
+# It will detect existing components and update or recreate them as needed
+
+# To force a complete fresh start, remove the installation directory:
+sudo rm -rf /opt/pine-ridge-waf
+sudo rm -f /etc/pine-ridge-waf*
+sudo rm -f /root/.ssh/waf_gitops_ed25519*
 ```
 
 **Service Debugging:**
@@ -143,6 +294,9 @@ sudo systemctl status waf-ansible.service
 
 # View service logs
 sudo journalctl -u waf-ansible.service --no-pager
+
+# Check timer status
+sudo systemctl list-timers waf-ansible.timer
 ```
 
 ## Security Considerations
