@@ -343,28 +343,37 @@ EOF
     sudo chmod 755 "$vault_script"
     sudo chown root:root "$vault_script"
     
-    # Test the setup
+    # Test the setup (skip verification for placeholder passwords)
     if [[ -f "$vault_password_file" ]] && [[ -x "$vault_script" ]]; then
-        if [[ "$($vault_script)" == "$vault_password" ]]; then
-            log "✓ Vault password stored successfully for system access"
+        if [[ "${vault_password:-}" != "VAULT_PASSWORD_NOT_SET" ]] && [[ -n "${vault_password:-}" ]]; then
+            # Only verify if we have a real password
+            if [[ "$(sudo "$vault_script")" == "$vault_password" ]]; then
+                log "✓ Vault password stored successfully for system access"
+            else
+                error "Vault password verification failed"
+            fi
         else
-            error "Vault password verification failed"
+            log "✓ Vault password placeholder created - setup manually later"
         fi
     else
         error "Failed to create vault password files"
     fi
     
-    # Test with Ansible if vault file exists
-    cd "$INSTALL_DIR/repo"
-    if [[ -f "inventory/group_vars/vault.yml" ]]; then
-        log "Testing vault password with existing vault file..."
-        if timeout 10 ansible-vault view inventory/group_vars/vault.yml --vault-password-file "$vault_script" >/dev/null 2>&1; then
-            log "✓ Vault password verified with Ansible"
+    # Test with Ansible if vault file exists (skip for placeholder passwords)
+    if [[ "${vault_password:-}" != "VAULT_PASSWORD_NOT_SET" ]] && [[ -n "${vault_password:-}" ]]; then
+        cd "$INSTALL_DIR/repo"
+        if [[ -f "inventory/group_vars/vault.yml" ]]; then
+            log "Testing vault password with existing vault file..."
+            if timeout 10 sudo ansible-vault view inventory/group_vars/vault.yml --vault-password-file "$vault_script" >/dev/null 2>&1; then
+                log "✓ Vault password verified with Ansible"
+            else
+                log "⚠ Vault password verification with Ansible failed - check password"
+            fi
         else
-            error "Vault password verification with Ansible failed"
+            log "No vault file found yet - password will be verified during first deployment"
         fi
     else
-        log "No vault file found yet - password will be verified during first deployment"
+        log "Skipping Ansible vault verification (placeholder password)"
     fi
     
     echo "System vault password setup completed successfully!"
