@@ -281,8 +281,13 @@ setup_vault_password() {
         else
             log "Vault password file already exists with real password"
             
+            # Debug logging for interactive detection
+            log "Interactive detection: [ -t 0 ] = $([ -t 0 ] && echo "true" || echo "false")"
+            log "FORCE_INTERACTIVE = ${FORCE_INTERACTIVE:-false}"
+            
             # Auto-detect if running interactively or from pipe
             if [ -t 0 ] || [[ "${FORCE_INTERACTIVE:-false}" == "true" ]]; then
+                log "Running in interactive mode - prompting for password update"
                 read -p "Do you want to update the existing password? (y/N): " -r update_password
                 if [[ ! $update_password =~ ^[Yy]$ ]]; then
                     log "Keeping existing vault password"
@@ -542,6 +547,8 @@ main() {
     log "Starting WAF Ansible bootstrap..."
     log "Repository: $REPO_URL"
     log "Branch: $GIT_BRANCH"
+    log "FORCE_INTERACTIVE: ${FORCE_INTERACTIVE:-false}"
+    log "Command line args: $*"
     
     check_prerequisites
     install_ansible
