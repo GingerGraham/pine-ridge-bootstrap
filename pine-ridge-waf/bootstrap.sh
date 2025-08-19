@@ -548,8 +548,6 @@ main() {
     log "Repository: $REPO_URL"
     log "Branch: $GIT_BRANCH"
     log "FORCE_INTERACTIVE: ${FORCE_INTERACTIVE:-false}"
-    log "Command line args: $*"
-    log "DEBUG: \$1='${1:-}', \$2='${2:-}', \$3='${3:-}'"
     
     check_prerequisites
     install_ansible
@@ -567,41 +565,69 @@ main() {
 
 # Handle command line arguments
 FORCE_INTERACTIVE=false
-case "${1:-}" in
-    --help|-h)
-        echo "Usage: $0 [OPTIONS] [REPO_URL] [BRANCH]"
-        echo "Options:"
-        echo "  --interactive, -i    Force interactive mode for vault password setup"
-        echo "  --help, -h          Show this help message"
-        echo ""
-        echo "Examples:"
-        echo "  $0 https://github.com/yourusername/pine-ridge-waf.git"
-        echo "  $0 --interactive https://github.com/yourusername/pine-ridge-waf.git"
-        echo "  $0 https://github.com/yourusername/pine-ridge-waf.git develop"
-        exit 0
-        ;;
-    --interactive|-i)
-        FORCE_INTERACTIVE=true
-        shift
-        if [[ -n "${1:-}" ]]; then
-            REPO_URL="$1"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)
+            echo "Usage: $0 [OPTIONS] [--repo REPO_URL] [--branch BRANCH]"
+            echo "Options:"
+            echo "  --interactive, -i          Force interactive mode for vault password setup"
+            echo "  --repo REPO_URL           Repository URL (default: https://github.com/yourusername/pine-ridge-waf.git)"
+            echo "  --branch BRANCH           Git branch to use (default: main)"
+            echo "  --help, -h                Show this help message"
+            echo ""
+            echo "Legacy positional arguments are still supported:"
+            echo "  $0 [REPO_URL] [BRANCH]"
+            echo ""
+            echo "Examples:"
+            echo "  $0 --repo https://github.com/yourusername/pine-ridge-waf.git"
+            echo "  $0 --interactive --repo https://github.com/yourusername/pine-ridge-waf.git"
+            echo "  $0 --repo https://github.com/yourusername/pine-ridge-waf.git --branch develop"
+            echo "  $0 https://github.com/yourusername/pine-ridge-waf.git develop  # legacy format"
+            exit 0
+            ;;
+        --interactive|-i)
+            FORCE_INTERACTIVE=true
             shift
-        fi
-        if [[ -n "${1:-}" ]]; then
-            GIT_BRANCH="$1"
-            shift
-        fi
-        ;;
-    *)
-        if [[ -n "${1:-}" ]]; then
-            REPO_URL="$1"
-            shift
-        fi
-        if [[ -n "${1:-}" ]]; then
-            GIT_BRANCH="$1"
-            shift
-        fi
-        ;;
-esac
+            ;;
+        --repo)
+            if [[ -n "${2:-}" ]]; then
+                REPO_URL="$2"
+                shift 2
+            else
+                echo "Error: --repo requires a repository URL"
+                exit 1
+            fi
+            ;;
+        --branch)
+            if [[ -n "${2:-}" ]]; then
+                GIT_BRANCH="$2"
+                shift 2
+            else
+                echo "Error: --branch requires a branch name"
+                exit 1
+            fi
+            ;;
+        --*)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+        *)
+            # Handle legacy positional arguments
+            if [[ -n "${1:-}" ]] && [[ -z "${REPO_URL_SET:-}" ]]; then
+                REPO_URL="$1"
+                REPO_URL_SET=true
+                shift
+            elif [[ -n "${1:-}" ]] && [[ -z "${GIT_BRANCH_SET:-}" ]]; then
+                GIT_BRANCH="$1"
+                GIT_BRANCH_SET=true
+                shift
+            else
+                echo "Unexpected argument: $1"
+                exit 1
+            fi
+            ;;
+    esac
+done
 
 main "$@"

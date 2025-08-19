@@ -61,6 +61,11 @@ The bootstrap script performs the following operations:
 ### Basic Usage (Recommended)
 
 ```bash
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git
+```
+
+**Legacy format (still supported):**
+```bash
 curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- https://github.com/GingerGraham/pine-ridge-waf.git
 ```
 
@@ -69,17 +74,32 @@ curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/ma
 When running the script via SSH or when you need to ensure interactive prompts work:
 
 ```bash
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git
+```
+
+**Legacy format:**
+```bash
 curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git
 ```
 
 ### Advanced Usage with Custom Branch
 
 ```bash
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git --branch develop
+```
+
+**Legacy format:**
+```bash
 curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- https://github.com/GingerGraham/pine-ridge-waf.git develop
 ```
 
 ### Interactive Mode with Custom Branch
 
+```bash
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git --branch develop
+```
+
+**Legacy format:**
 ```bash
 curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git develop
 ```
@@ -93,10 +113,17 @@ wget https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pi
 # Make it executable
 chmod +x bootstrap.sh
 
-# Run with your repository URL
-./bootstrap.sh https://github.com/GingerGraham/pine-ridge-waf.git
+# Run with named arguments (recommended)
+./bootstrap.sh --repo https://github.com/GingerGraham/pine-ridge-waf.git
 
-# Or with interactive mode
+# Run with interactive mode
+./bootstrap.sh --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git
+
+# Run with custom branch
+./bootstrap.sh --repo https://github.com/GingerGraham/pine-ridge-waf.git --branch develop
+
+# Legacy positional arguments still work
+./bootstrap.sh https://github.com/GingerGraham/pine-ridge-waf.git
 ./bootstrap.sh --interactive https://github.com/GingerGraham/pine-ridge-waf.git
 ```
 
@@ -107,8 +134,13 @@ chmod +x bootstrap.sh
 curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --help
 
 # Available options:
-#   --interactive, -i    Force interactive mode for vault password setup
-#   --help, -h          Show help message
+#   --interactive, -i          Force interactive mode for vault password setup
+#   --repo REPO_URL           Repository URL (default: https://github.com/yourusername/pine-ridge-waf.git)
+#   --branch BRANCH           Git branch to use (default: main)
+#   --help, -h                Show help message
+#
+# Legacy positional arguments are still supported:
+#   REPO_URL BRANCH
 ```
 
 ## When to Use Each Method
@@ -116,19 +148,19 @@ curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/ma
 ### 🖥️ **IP KVM Console (Production Servers)**
 Use the basic method - the script will automatically detect console interaction:
 ```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- https://github.com/GingerGraham/pine-ridge-waf.git
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git
 ```
 
 ### 🔐 **SSH Sessions (Remote Management)**
 Use interactive mode to ensure vault password prompts work correctly:
 ```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git
 ```
 
 ### 🤖 **Automated Deployment (CI/CD, Scripts)**
 Use basic mode - vault password setup will be skipped and can be configured later:
 ```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- https://github.com/GingerGraham/pine-ridge-waf.git
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git
 ```
 
 ### 🔧 **Development/Testing**
@@ -136,7 +168,7 @@ Download and run locally for easier debugging:
 ```bash
 wget https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh
 chmod +x bootstrap.sh
-./bootstrap.sh --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+./bootstrap.sh --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git --branch develop
 ```
 
 ### 🔄 **Re-running After Partial Setup**
@@ -192,7 +224,7 @@ The script handles vault password setup differently depending on how it's execut
 If the script ran in non-interactive mode, you can set up the vault password later by:
 ```bash
 # Re-run with interactive mode
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git
 
 # Or use a setup script (if available in your repository)
 sudo /opt/pine-ridge-waf/repo/scripts/setup-vault-password.sh
@@ -268,7 +300,7 @@ ls -la /etc/pine-ridge-waf-vault-pass
 groups
 
 # If you see "VAULT_PASSWORD_NOT_SET", run the script in interactive mode:
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git
 
 # If you get permission denied errors:
 # 1. Check if you're in the waf-vault group: groups
@@ -282,10 +314,10 @@ curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/ma
 # 1. Download and run locally
 wget https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh
 chmod +x bootstrap.sh
-./bootstrap.sh --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+./bootstrap.sh --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git
 
 # 2. Or use explicit interactive flag with curl
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git
 ```
 
 **Re-running After Failures:**
