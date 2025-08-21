@@ -461,7 +461,7 @@ run_initial_deployment() {
     
     # Run the playbook
     log "Running WAF configuration playbook..."
-    if ansible-playbook -i localhost, --connection=local site.yml; then
+    if ansible-playbook site.yml; then
         log "Initial WAF configuration completed successfully"
     else
         log "Initial configuration failed - this may be normal if vault is not yet set up"
@@ -492,7 +492,7 @@ User=root
 EnvironmentFile=/etc/pine-ridge-waf.conf
 WorkingDirectory=/opt/pine-ridge-waf/repo
 ExecStartPre=/opt/pine-ridge-waf/repo/scripts/sync-repo.sh
-ExecStart=/usr/bin/ansible-playbook -i localhost, --connection=local site.yml
+ExecStart=/usr/bin/ansible-playbook site.yml
 StandardOutput=journal
 StandardError=journal
 TimeoutSec=600
