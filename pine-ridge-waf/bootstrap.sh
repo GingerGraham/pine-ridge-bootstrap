@@ -56,9 +56,30 @@ install_ansible() {
     # Install Ansible and required collections
     sudo dnf install -y ansible-core python3-pip libsecret
     
-    # Install common collections we'll need
-    ansible-galaxy collection install community.general
-    ansible-galaxy collection install ansible.posix
+    # Install common collections system-wide (for root user since ansible runs as root)
+    log "Installing Ansible collections system-wide..."
+    sudo ansible-galaxy collection install community.general
+    sudo ansible-galaxy collection install ansible.posix
+    
+    # Also install for current user in case needed for local testing
+    ansible-galaxy collection install community.general 2>/dev/null || true
+    ansible-galaxy collection install ansible.posix 2>/dev/null || true
+    
+    # Verify collections are installed
+    log "Verifying Ansible collections installation..."
+    if sudo ansible-galaxy collection list | grep -q "ansible.posix"; then
+        log "✓ ansible.posix collection installed successfully"
+    else
+        log "⚠ ansible.posix collection not found, retrying installation..."
+        sudo ansible-galaxy collection install ansible.posix --force
+    fi
+    
+    if sudo ansible-galaxy collection list | grep -q "community.general"; then
+        log "✓ community.general collection installed successfully"
+    else
+        log "⚠ community.general collection not found, retrying installation..."
+        sudo ansible-galaxy collection install community.general --force
+    fi
     
     log "Ansible installed successfully"
 }
