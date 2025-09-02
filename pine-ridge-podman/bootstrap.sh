@@ -1,111 +1,123 @@
 #!/bin/bash
-# setup/bootstrap.sh - Initial host setup for Podman GitOps
+# podman-bootstrap.sh - Bootstrap Podman with Ansible GitOps
 
 set -euo pipefail
 
-# Configuration
-REPO_URL="${REPO_URL:-https://github.com/yourusername/pine-ridge-podman.git}"
+REPO_URL="https://github.com/yourusername/pine-ridge-podman.git"
+GIT_BRANCH="main"
 INSTALL_DIR="/opt/pine-ridge-podman"
-SYSTEMD_DIR="/etc/systemd/system"
-QUADLET_DIR="/etc/containers/systemd"
+LOG_FILE="/tmp/podman-bootstrap-$(date +%s).log"
 
-# Set some variables that logging.sh expects to avoid unbound variable errors
-ZSH_VERSION="${ZSH_VERSION:-}"
-NO_COLOR="${NO_COLOR:-}"
-CLICOLOR="${CLICOLOR:-}"
-CLICOLOR_FORCE="${CLICOLOR_FORCE:-}"
+# Ensure log file is writable
+touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/dev/null"
 
-# Source the shared logging module (try to find it relative to this script)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-if [[ -f "$REPO_ROOT/bin/logging.sh" ]]; then
-    # shellcheck disable=SC1091
-    source "$REPO_ROOT/bin/logging.sh"
-    # Initialize logging with file output
-    LOG_FILE="/tmp/pine-ridge-podman-setup.log_info"
-    init_logger --log "$LOG_FILE" --journal --tag "bootstrap" --level INFO
-else
-    # Fallback to basic logging if shared module not available
-    LOG_FILE="/tmp/pine-ridge-podman-setup.log_info"
-    log_info() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"; }
-    log_warn() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] WARNING: $1" | tee -a "$LOG_FILE"; }
-    log_error() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $1" | tee -a "$LOG_FILE"; exit 1; }
-fi
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+error() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $1" | tee -a "$LOG_FILE"
+    exit 1
+}
 
 check_prerequisites() {
-    log_info "Checking prerequisites..."
+    log "Checking prerequisites..."
     
     # Check if running as non-root with sudo
     if [[ $EUID -eq 0 ]]; then
-        log_error "This script should not be run as root. Run as a user with sudo privileges."
+        error "This script should not be run as root. Run as a user with sudo privileges."
     fi
     
     # Check sudo access
     if ! sudo -n true 2>/dev/null; then
-        log_error "This script requires sudo privileges. Please run with a user in the wheel group."
+        error "This script requires sudo privileges. Please run with a user in the wheel group."
     fi
     
-    # Check if podman is installed
-    if ! command -v podman &> /dev/null; then
-        log_error "Podman is not installed. Please install podman first: sudo dnf install podman"
-    fi
-    
-    # Check if git is installed
+    # Check if git is installed, install if missing
     if ! command -v git &> /dev/null; then
-        log_info "Installing git..."
+        log "Git not found, installing..."
         sudo dnf install -y git
+    else
+        log "Git is already installed"
     fi
     
-    log_info "Prerequisites check completed"
+    # Check if curl is installed (usually present but good to verify)
+    if ! command -v curl &> /dev/null; then
+        log "curl not found, installing..."
+        sudo dnf install -y curl
+    fi
+    
+    log "Prerequisites check completed"
 }
 
-setup_directories() {
-    log_info "Setting up directory structure..."
+install_ansible() {
+    log "Installing Ansible and Podman..."
     
-    sudo mkdir -p "$INSTALL_DIR"/{logs,secrets,backups}
-    sudo mkdir -p "$QUADLET_DIR"
+    # Install Ansible, Podman and required collections
+    sudo dnf install -y ansible-core python3-pip podman podman-compose yq
     
-    # Set ownership for the main install directory
-    sudo chown -R "$USER:$USER" "$INSTALL_DIR"
+    # Install common collections system-wide (for root user since ansible runs as root)
+    log "Installing Ansible collections system-wide..."
+    sudo ansible-galaxy collection install community.general
+    sudo ansible-galaxy collection install ansible.posix
+    sudo ansible-galaxy collection install containers.podman
     
-    # Set permissions
-    chmod 755 "$INSTALL_DIR"
-    chmod 700 "$INSTALL_DIR/secrets"
-    chmod 755 "$INSTALL_DIR/logs"
-    chmod 755 "$INSTALL_DIR/backups"
+    # Also install for current user in case needed for local testing
+    ansible-galaxy collection install community.general 2>/dev/null || true
+    ansible-galaxy collection install ansible.posix 2>/dev/null || true
+    ansible-galaxy collection install containers.podman 2>/dev/null || true
     
-    log_info "Directory structure created (repo directory will be created during git clone)"
+    # Verify collections are installed
+    log "Verifying Ansible collections installation..."
+    for collection in "ansible.posix" "community.general" "containers.podman"; do
+        if sudo ansible-galaxy collection list | grep -q "$collection"; then
+            log "✓ $collection collection installed successfully"
+        else
+            log "⚠ $collection collection not found, retrying installation..."
+            sudo ansible-galaxy collection install "$collection" --force
+        fi
+    done
+    
+    # Enable podman socket
+    log "Enabling podman socket..."
+    sudo systemctl enable --now podman.socket
+    
+    log "Ansible and Podman installed successfully"
 }
 
-setup_ssh_authentication() {
-    log_info "Setting up SSH authentication for Git..."
+setup_ssh_auth() {
+    log "Setting up SSH authentication..."
     
     local ssh_dir="/root/.ssh"
-    local ssh_key="$ssh_dir/gitops_ed25519"
+    local ssh_key="$ssh_dir/podman_gitops_ed25519"
     local ssh_config="$ssh_dir/config"
     
     # Create SSH directory if it doesn't exist
     sudo mkdir -p "$ssh_dir"
     sudo chmod 700 "$ssh_dir"
     
-    # Generate SSH key if it doesn't exist
-    if [[ ! -f "$ssh_key" ]]; then
-        log_info "Generating SSH key for GitOps..."
-        sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "gitops@$(hostname)"
-        sudo chmod 600 "$ssh_key"
-        sudo chmod 644 "$ssh_key.pub"
-        
-        log_info "SSH key generated: $ssh_key.pub"
-    else
-        log_info "SSH key already exists: $ssh_key"
-        log_info "Removing existing key and generating new one..."
-        sudo rm -f "$ssh_key" "$ssh_key.pub"
-        sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "gitops@$(hostname)"
-        sudo chmod 600 "$ssh_key"
-        sudo chmod 644 "$ssh_key.pub"
-        log_info "New SSH key generated: $ssh_key.pub"
+    # Always remove existing SSH keys to ensure clean generation
+    log "Removing any existing SSH keys..."
+    sudo rm -f "$ssh_key" "$ssh_key.pub"
+    
+    # Verify removal worked
+    if [[ -f "$ssh_key" ]]; then
+        log "Warning: SSH key file still exists after removal attempt"
+        sudo chmod 666 "$ssh_key" 2>/dev/null || true
+        sudo rm -f "$ssh_key"
     fi
-    # Always show the SSH key and setup instructions (whether new or existing)
+    
+    log "Generating SSH key for GitOps..."
+    # Use yes to automatically answer prompts and redirect to avoid issues
+    echo | sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "podman-gitops@$(hostname)" 2>/dev/null || \
+    sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "podman-gitops@$(hostname)" < /dev/null
+    
+    sudo chmod 600 "$ssh_key"
+    sudo chmod 644 "$ssh_key.pub"
+    
+    log "SSH key generated: $ssh_key.pub"
+    
+    # Always show the SSH key and setup instructions
     echo
     echo "=== SSH KEY FOR GITHUB ==="
     echo "Add this SSH public key to your GitHub repository as a deploy key:"
@@ -115,7 +127,7 @@ setup_ssh_authentication() {
     echo "Steps:"
     echo "1. Go to your GitHub repo → Settings → Deploy keys"
     echo "2. Click 'Add deploy key'"
-    echo "3. Give it a title like 'GitOps Server'"
+    echo "3. Give it a title like 'Podman GitOps Server'"
     echo "4. Paste the above public key"
     echo "5. Do NOT check 'Allow write access' (read-only is safer)"
     echo "6. Click 'Add key'"
@@ -144,7 +156,7 @@ setup_ssh_authentication() {
     
     # Create/update SSH config for GitHub
     sudo tee "$ssh_config" > /dev/null <<EOF
-# GitOps SSH configuration
+# Podman GitOps SSH configuration
 Host github.com
     HostName github.com
     User git
@@ -162,214 +174,320 @@ convert_repo_url_to_ssh() {
     # Convert HTTPS GitHub URLs to SSH format
     if [[ "$REPO_URL" =~ ^https://github\.com/(.+)\.git$ ]]; then
         REPO_URL="git@github.com:${BASH_REMATCH[1]}.git"
-        log_info "Converted repository URL to SSH format: $REPO_URL"
+        log "Converted repository URL to SSH format: $REPO_URL"
     elif [[ "$REPO_URL" =~ ^https://github\.com/(.+)$ ]]; then
         REPO_URL="git@github.com:${BASH_REMATCH[1]}.git"
-        log_info "Converted repository URL to SSH format: $REPO_URL"
+        log "Converted repository URL to SSH format: $REPO_URL"
     fi
 }
 
-clone_repository() {
-    log_info "Cloning repository..."
+clone_and_run() {
+    log "Cloning repository..."
     
     # Test SSH connection first
     local ssh_test_result
     ssh_test_result=$(sudo ssh -T git@github.com 2>&1 || true)
     
     if echo "$ssh_test_result" | grep -q "You've successfully authenticated, but GitHub does not provide shell access"; then
-        log_info "SSH connection to GitHub verified successfully"
+        log "SSH connection to GitHub verified successfully"
     else
-        log_warn "SSH connection to GitHub failed. Please verify:"
-        log_warn "1. The deploy key is added to your repository"
-        log_warn "2. Your repository URL is correct"
-        log_warn "3. The repository exists and is accessible"
+        log "SSH connection to GitHub failed. Please verify:"
+        log "1. The deploy key is added to your repository"
+        log "2. Your repository URL is correct"
+        log "3. The repository exists and is accessible"
         echo
         echo "Testing SSH connection manually:"
         echo "$ssh_test_result"
         echo
-        read -p "Continue anyway? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_error "SSH authentication failed. Please fix the issue and try again."
+        
+        # Auto-detect if running interactively or from pipe for error handling
+        if [ -t 0 ]; then
+            read -p "Continue anyway? (y/N): " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                error "SSH authentication failed. Please fix the issue and try again."
+            fi
+        else
+            log "Script running from pipe - continuing despite SSH warning..."
+            log "If deployment fails, verify SSH key setup and try again"
         fi
     fi
     
-    if [[ -d "$INSTALL_DIR/repo/.git" ]]; then
-        log_info "Repository directory exists, updating..."
-        cd "$INSTALL_DIR/repo"
-        # Ensure proper ownership before git operations
-        sudo chown -R root:root "$INSTALL_DIR/repo"
-        sudo git pull origin main
-    else
-        log_info "Cloning repository: $REPO_URL"
-        # Remove any existing directory that's not a git repo
-        if [[ -d "$INSTALL_DIR/repo" ]]; then
+    # Create install directory if it doesn't exist
+    sudo mkdir -p "$INSTALL_DIR"
+    
+    # Handle existing repository more robustly
+    if [[ -d "$INSTALL_DIR/repo" ]]; then
+        if [[ -d "$INSTALL_DIR/repo/.git" ]]; then
+            log "Repository directory exists, updating..."
+            cd "$INSTALL_DIR/repo"
+            
+            # Ensure proper ownership before git operations
+            sudo chown -R root:root "$INSTALL_DIR/repo"
+            
+            # Check if we can access the remote
+            if sudo git remote get-url origin >/dev/null 2>&1; then
+                current_remote=$(sudo git remote get-url origin)
+                if [[ "$current_remote" == "$REPO_URL" ]]; then
+                    log "Updating existing repository..."
+                    sudo git fetch origin
+                    sudo git reset --hard origin/main 2>/dev/null || sudo git reset --hard origin/master 2>/dev/null || {
+                        log "Failed to reset to remote branch, re-cloning..."
+                        cd /
+                        sudo rm -rf "$INSTALL_DIR/repo"
+                        sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+                    }
+                else
+                    log "Repository URL mismatch, re-cloning..."
+                    log "Current: $current_remote"
+                    log "Expected: $REPO_URL"
+                    cd /
+                    sudo rm -rf "$INSTALL_DIR/repo"
+                    sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+                fi
+            else
+                log "Cannot access remote, re-cloning..."
+                cd /
+                sudo rm -rf "$INSTALL_DIR/repo"
+                sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+            fi
+        else
+            log "Directory exists but is not a git repository, removing and cloning..."
             sudo rm -rf "$INSTALL_DIR/repo"
+            sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
         fi
+    else
+        log "Cloning repository: $REPO_URL"
         sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
     fi
     
-    # Set proper ownership for the repo directory to root (service user)
-    sudo chown -R root:root "$INSTALL_DIR/repo"
-    sudo chmod 755 "$INSTALL_DIR/repo"
-    
-    # Set git configuration for the system service
     cd "$INSTALL_DIR/repo"
-    sudo git config user.name "GitOps System"
-    sudo git config user.email "gitops@$(hostname)"
+    
+    # Set git configuration for branch tracking
+    sudo git config user.name "Podman GitOps System"
+    sudo git config user.email "podman-gitops@$(hostname)"
     
     # Disable filemode tracking to prevent permission conflicts
-    # Scripts will get execute permissions from git hooks and explicit chmod
     sudo git config core.filemode false
     
     # Disable git hooks during service operations to prevent permission conflicts
-    # Hooks are designed for development workflow, not production sync
     sudo git config core.hooksPath /dev/null
     
     # Ensure scripts are executable after clone/update
     sudo find "$INSTALL_DIR/repo" -name "*.sh" -type f -exec chmod +x {} \;
     
-    log_info "Repository cloned/updated"
+    log "Repository cloned successfully"
 }
 
-enable_podman_socket() {
-    log_info "Enabling Podman socket for system services..."
+run_initial_deployment() {
+    log "Running initial Podman configuration..."
     
-    # Enable podman socket for root (system services)
-    sudo systemctl enable --now podman.socket
+    cd "$INSTALL_DIR/repo/ansible"
     
-    # Enable user lingering for the management user
-    sudo loginctl enable-linger "$USER"
+    # Test ansible configuration first
+    log "Testing Ansible configuration..."
+    if ! ansible --version >/dev/null 2>&1; then
+        error "Ansible is not properly installed"
+    fi
     
-    log_info "Podman socket enabled"
+    # Install any additional requirements from the repo
+    if [[ -f "requirements.yml" ]]; then
+        log "Installing Ansible requirements from repository..."
+        sudo ansible-galaxy install -r requirements.yml
+    fi
+    
+    # Run the playbook
+    log "Running Podman configuration playbook..."
+    if sudo ansible-playbook site.yml; then
+        log "Initial Podman configuration completed successfully"
+    else
+        log "Initial configuration failed - this may be normal for first setup"
+        log "You can run 'sudo ansible-playbook site.yml' manually after setup"
+    fi
 }
 
-install_management_services() {
-    log_info "Installing management services..."
+setup_ansible_gitops() {
+    log "Setting up Ansible GitOps service..."
     
-    # Copy service files
-    sudo cp "$INSTALL_DIR/repo/services/"*.service "$SYSTEMD_DIR/"
-    sudo cp "$INSTALL_DIR/repo/services/"*.timer "$SYSTEMD_DIR/"
+    # Create scripts directory if it doesn't exist
+    sudo mkdir -p "$INSTALL_DIR/repo/scripts"
     
-    # Create configuration file
+    # Create configuration file for branch tracking
     sudo tee /etc/pine-ridge-podman.conf > /dev/null <<EOF
 REPO_URL=$REPO_URL
+GIT_BRANCH=$GIT_BRANCH
 INSTALL_DIR=$INSTALL_DIR
-QUADLET_DIR=$QUADLET_DIR
+QUADLET_DIR=/etc/containers/systemd
 MANAGEMENT_USER=$USER
 EOF
-    
-    # Reload systemd and enable services
+
+    # Create sync script for the service
+    sudo tee "$INSTALL_DIR/repo/scripts/sync-repo-ansible.sh" > /dev/null <<'EOF'
+#!/bin/bash
+# Sync script for Ansible-based GitOps
+set -euo pipefail
+
+source /etc/pine-ridge-podman.conf
+cd "$INSTALL_DIR/repo"
+
+# Set SSH environment for git operations
+export GIT_SSH_COMMAND="ssh -i /root/.ssh/podman_gitops_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+
+# Fetch and check for changes
+if git fetch origin "$GIT_BRANCH" && ! git diff --quiet HEAD "origin/$GIT_BRANCH"; then
+    echo "Changes detected, pulling updates..."
+    git reset --hard "origin/$GIT_BRANCH"
+    find "$INSTALL_DIR/repo" -name "*.sh" -type f -exec chmod +x {} \;
+    echo "Repository updated successfully"
+else
+    echo "No changes detected"
+fi
+EOF
+
+    sudo chmod +x "$INSTALL_DIR/repo/scripts/sync-repo-ansible.sh"
+
+    # Create systemd service for Ansible runs
+    sudo tee /etc/systemd/system/podman-ansible.service > /dev/null <<'EOF'
+[Unit]
+Description=Podman Ansible Configuration
+After=network-online.target podman.socket
+Wants=network-online.target
+Requires=podman.socket
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/pine-ridge-podman.conf
+WorkingDirectory=/opt/pine-ridge-podman/repo/ansible
+ExecStartPre=/opt/pine-ridge-podman/repo/scripts/sync-repo-ansible.sh
+ExecStart=/usr/bin/ansible-playbook site.yml
+StandardOutput=journal
+StandardError=journal
+TimeoutSec=600
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Create timer for Podman config (less frequent than WAF)
+    sudo tee /etc/systemd/system/podman-ansible.timer > /dev/null <<'EOF'
+[Unit]
+Description=Podman Ansible Configuration Timer
+Requires=podman-ansible.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
     sudo systemctl daemon-reload
+    sudo systemctl enable --now podman-ansible.timer
     
-    # Enable services for boot
-    sudo systemctl enable --now gitops-sync.timer
-    sudo systemctl enable quadlet-deploy.service
-    
-    # Verify services are enabled
-    if sudo systemctl is-enabled --quiet gitops-sync.timer; then
-        log_info "GitOps sync timer enabled successfully"
-    else
-        log_warn "Failed to enable GitOps sync timer"
-    fi
-    
-    if sudo systemctl is-enabled --quiet quadlet-deploy.service; then
-        log_info "Quadlet deploy service enabled successfully"  
-    else
-        log_warn "Failed to enable quadlet deploy service"
-    fi
-    
-    log_info "Management services installed"
+    log "GitOps services configured and started"
 }
 
-configure_selinux() {
-    log_info "Configuring SELinux contexts..."
+show_completion_status() {
+    log "Podman bootstrap completed successfully!"
     
-    # Set appropriate SELinux contexts
-    sudo restorecon -R "$INSTALL_DIR"
-    sudo setsebool -P container_manage_cgroup true
+    echo ""
+    echo "=== SETUP COMPLETE ==="
+    echo "✓ Ansible and Podman installed and configured"
+    echo "✓ Repository cloned and configured"
+    echo "✓ GitOps services enabled"
+    echo "✓ Podman socket enabled"
+    echo ""
     
-    log_info "SELinux configured"
-}
-
-initial_deployment() {
-    log_info "Performing initial quadlet deployment..."
-    
-    if [[ -x "$INSTALL_DIR/repo/scripts/deploy-quadlets.sh" ]]; then
-        sudo "$INSTALL_DIR/repo/scripts/deploy-quadlets.sh"
-    else
-        log_warn "Deploy script not found, skipping initial deployment"
-    fi
-}
-
-start_services() {
-    log_info "Verifying management services..."
-    
-    # Verify timer status
-    if sudo systemctl is-active --quiet gitops-sync.timer; then
-        log_info "GitOps sync timer is running successfully"
-        sudo systemctl status gitops-sync.timer --no-pager --lines=5
-    else
-        log_warn "GitOps sync timer is not running, attempting to start..."
-        sudo systemctl start gitops-sync.timer
-    fi
-    
-    # Show timer schedule
-    sudo systemctl list-timers gitops-sync.timer --no-pager
-    
-    log_info "Services verification completed"
-}
-
-show_status() {
-    log_info "Installation completed successfully!"
-    echo
-    echo "=== Status ==="
-    echo "Install directory: $INSTALL_DIR"
-    echo "Quadlet directory: $QUADLET_DIR"
-    echo "Repository: $REPO_URL"
-    echo
-    echo "=== Active Services ==="
-    sudo systemctl list-timers gitops-sync.timer --no-pager
-    echo
-    echo "=== Next Steps ==="
-    echo "1. Review configuration in /etc/podman-gitops.conf"
-    echo "2. Add secrets to $INSTALL_DIR/secrets/ if needed"
-    echo "3. Monitor logs: journalctl -u gitops-sync.service -f"
-    echo "4. Check quadlet status: systemctl --user status"
+    echo "=== NEXT STEPS ==="
+    echo "1. Your Podman setup will auto-update from Git every 5 minutes"
+    echo "2. Monitor services: journalctl -u podman-ansible.service -f"
+    echo "3. Check timer status: systemctl list-timers podman-ansible.timer"
+    echo "4. Manual deployment: cd $INSTALL_DIR/repo/ansible && sudo ansible-playbook site.yml"
+    echo "5. Add quadlets to $INSTALL_DIR/repo/quadlets/ and push to Git"
+    echo ""
+    echo "=== SERVICE STATUS ==="
+    sudo systemctl status podman-ansible.timer --no-pager --lines=5 || true
+    echo ""
 }
 
 main() {
-    log_info "Starting Podman GitOps bootstrap setup..."
+    log "Starting Podman Ansible bootstrap..."
+    log "Repository: $REPO_URL"
+    log "Branch: $GIT_BRANCH"
     
     check_prerequisites
-    setup_directories
+    install_ansible
     convert_repo_url_to_ssh
-    setup_ssh_authentication
-    clone_repository
-    enable_podman_socket
-    install_management_services
-    configure_selinux
-    initial_deployment
-    start_services
-    show_status
+    setup_ssh_auth
+    clone_and_run
+    run_initial_deployment      # Test deployment
+    setup_ansible_gitops       # Enable ongoing automation
+    show_completion_status
     
-    log_info "Bootstrap setup completed successfully"
-    echo
-    echo "Setup log_info saved to: $LOG_FILE"
+    log "Podman bootstrap completed successfully"
+    echo "Bootstrap log saved to: $LOG_FILE"
 }
 
-# Handle command line arguments
-case "${1:-}" in
-    --help|-h)
-        echo "Usage: $0 [REPO_URL]"
-        echo "Example: $0 https://github.com/yourusername/pine-ridge-podman.git"
-        exit 0
-        ;;
-    *)
-        if [[ -n "${1:-}" ]]; then
-            REPO_URL="$1"
-        fi
-        ;;
-esac
+# Handle command line arguments (same pattern as WAF bootstrap)
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)
+            echo "Usage: $0 [OPTIONS] [--repo REPO_URL] [--branch BRANCH]"
+            echo "Options:"
+            echo "  --repo REPO_URL           Repository URL (default: https://github.com/yourusername/pine-ridge-podman.git)"
+            echo "  --branch BRANCH           Git branch to use (default: main)"
+            echo "  --help, -h                Show this help message"
+            echo ""
+            echo "Legacy positional arguments are still supported:"
+            echo "  $0 [REPO_URL] [BRANCH]"
+            echo ""
+            echo "Examples:"
+            echo "  $0 --repo https://github.com/yourusername/pine-ridge-podman.git"
+            echo "  $0 --repo https://github.com/yourusername/pine-ridge-podman.git --branch develop"
+            echo "  $0 https://github.com/yourusername/pine-ridge-podman.git develop  # legacy format"
+            exit 0
+            ;;
+        --repo)
+            if [[ -n "${2:-}" ]]; then
+                REPO_URL="$2"
+                shift 2
+            else
+                echo "Error: --repo requires a repository URL"
+                exit 1
+            fi
+            ;;
+        --branch)
+            if [[ -n "${2:-}" ]]; then
+                GIT_BRANCH="$2"
+                shift 2
+            else
+                echo "Error: --branch requires a branch name"
+                exit 1
+            fi
+            ;;
+        --*)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+        *)
+            # Handle legacy positional arguments
+            if [[ -n "${1:-}" ]] && [[ -z "${REPO_URL_SET:-}" ]]; then
+                REPO_URL="$1"
+                REPO_URL_SET=true
+                shift
+            elif [[ -n "${1:-}" ]] && [[ -z "${GIT_BRANCH_SET:-}" ]]; then
+                GIT_BRANCH="$1"
+                GIT_BRANCH_SET=true
+                shift
+            else
+                echo "Unexpected argument: $1"
+                exit 1
+            fi
+            ;;
+    esac
+done
 
 main "$@"
