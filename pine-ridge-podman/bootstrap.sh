@@ -291,7 +291,10 @@ run_initial_deployment() {
     fi
     
     # Install any additional requirements from the repo
-    if [[ -f "requirements.yml" ]]; then
+    if [[ -f "ansible/requirements.yml" ]]; then
+        log "Installing Ansible collections from repository requirements..."
+        sudo ansible-galaxy collection install -r ansible/requirements.yml
+    elif [[ -f "requirements.yml" ]]; then
         log "Installing Ansible requirements from repository..."
         sudo ansible-galaxy install -r requirements.yml
     fi
