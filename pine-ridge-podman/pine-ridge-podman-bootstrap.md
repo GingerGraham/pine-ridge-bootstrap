@@ -28,6 +28,12 @@ Bootstrap script for setting up the Pine Ridge Podman GitOps system using Ansibl
 curl -sSL https://raw.githubusercontent.com/yourusername/pine-ridge-bootstrap/main/pine-ridge-podman/bootstrap.sh | bash -s -- --repo https://github.com/yourusername/pine-ridge-podman.git
 ```
 
+### Interactive Mode (for SSH sessions)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/yourusername/pine-ridge-bootstrap/main/pine-ridge-podman/bootstrap.sh | bash -s -- --interactive --repo https://github.com/yourusername/pine-ridge-podman.git
+```
+
 ### Manual Install
 
 1. **Download and run the bootstrap script:**
@@ -73,7 +79,7 @@ curl -sSL https://raw.githubusercontent.com/yourusername/pine-ridge-bootstrap/ma
 ## GitOps Workflow
 
 1. **Push changes** to your pine-ridge-podman repository
-2. **Automatic sync** every 5 minutes via systemd timer
+2. **Automatic sync** every 5 minutes via systemd timer (faster than WAF due to container nature)
 3. **Ansible execution** applies configuration changes
 4. **Container deployment** through quadlets and systemd
 
@@ -84,14 +90,34 @@ curl -sSL https://raw.githubusercontent.com/yourusername/pine-ridge-bootstrap/ma
 ./bootstrap.sh --repo https://github.com/yourusername/my-podman-config.git
 ```
 
-### Different Branch
+### Different Branch (including pathed branches)
 ```bash
 ./bootstrap.sh --repo https://github.com/yourusername/pine-ridge-podman.git --branch develop
+./bootstrap.sh --repo https://github.com/yourusername/pine-ridge-podman.git --branch feat/moving-to-ansible
+./bootstrap.sh --repo https://github.com/yourusername/pine-ridge-podman.git --branch bugfix/container-issue
 ```
 
 ### Legacy Format (still supported)
 ```bash
 ./bootstrap.sh https://github.com/yourusername/pine-ridge-podman.git main
+./bootstrap.sh https://github.com/yourusername/pine-ridge-podman.git feat/moving-to-ansible
+```
+
+### Command Line Options
+
+```bash
+Usage: ./bootstrap.sh [OPTIONS] [--repo REPO_URL] [--branch BRANCH]
+
+Options:
+  --interactive, -i          Force interactive mode (for SSH sessions or troubleshooting)
+  --repo REPO_URL           Repository URL (required)
+  --branch BRANCH           Git branch to use (default: main)
+  --help, -h                Show help message
+
+Examples:
+  ./bootstrap.sh --repo https://github.com/yourusername/pine-ridge-podman.git
+  ./bootstrap.sh --interactive --repo https://github.com/yourusername/pine-ridge-podman.git --branch feat/moving-to-ansible
+  ./bootstrap.sh https://github.com/yourusername/pine-ridge-podman.git develop  # legacy format
 ```
 
 ## Monitoring and Management
@@ -125,6 +151,17 @@ This bootstrap script is designed to work with the [Pine Ridge Bootstrap](https:
 - **Consistent SSH key management** across all Pine Ridge components
 - **Standardized GitOps patterns** following the WAF approach
 - **Ansible-first configuration** for maintainability and consistency
+- **Templated sync scripts** generated from common template with Podman-specific customizations
+
+### Generated Sync Script
+
+The `scripts/sync-repo-ansible.sh` file is automatically generated using a standardized template system that provides:
+- ✅ **Comprehensive logging** to `/opt/pine-ridge-podman/logs/sync.log`
+- ✅ **Lock file management** to prevent concurrent executions
+- ✅ **Branch support** including pathed branches like `feat/branch-name`  
+- ✅ **Repository validation** for `quadlets/` and `ansible/` directories
+- ✅ **Deployment triggering** for quadlet services when available
+- ✅ **Error handling and recovery** for robust operation
 
 ## Security Features
 

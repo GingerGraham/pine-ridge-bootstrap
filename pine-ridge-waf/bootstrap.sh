@@ -230,11 +230,11 @@ clone_and_run() {
                 if [[ "$current_remote" == "$REPO_URL" ]]; then
                     log "Updating existing repository..."
                     sudo git fetch origin
-                    sudo git reset --hard origin/main 2>/dev/null || sudo git reset --hard origin/master 2>/dev/null || {
-                        log "Failed to reset to remote branch, re-cloning..."
+                    sudo git reset --hard "origin/$GIT_BRANCH" 2>/dev/null || {
+                        log "Failed to reset to remote branch $GIT_BRANCH, re-cloning..."
                         cd /
                         sudo rm -rf "$INSTALL_DIR/repo"
-                        sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+                        sudo git clone -b "$GIT_BRANCH" "$REPO_URL" "$INSTALL_DIR/repo"
                     }
                 else
                     log "Repository URL mismatch, re-cloning..."
@@ -242,22 +242,22 @@ clone_and_run() {
                     log "Expected: $REPO_URL"
                     cd /
                     sudo rm -rf "$INSTALL_DIR/repo"
-                    sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+                    sudo git clone -b "$GIT_BRANCH" "$REPO_URL" "$INSTALL_DIR/repo"
                 fi
             else
                 log "Cannot access remote, re-cloning..."
                 cd /
                 sudo rm -rf "$INSTALL_DIR/repo"
-                sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+                sudo git clone -b "$GIT_BRANCH" "$REPO_URL" "$INSTALL_DIR/repo"
             fi
         else
             log "Directory exists but is not a git repository, removing and cloning..."
             sudo rm -rf "$INSTALL_DIR/repo"
-            sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+            sudo git clone -b "$GIT_BRANCH" "$REPO_URL" "$INSTALL_DIR/repo"
         fi
     else
         log "Cloning repository: $REPO_URL"
-        sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+        sudo git clone -b "$GIT_BRANCH" "$REPO_URL" "$INSTALL_DIR/repo"
     fi
     
     cd "$INSTALL_DIR/repo"
@@ -472,12 +472,182 @@ run_initial_deployment() {
 setup_ansible_gitops() {
     log "Setting up Ansible GitOps service..."
     
+    # Create scripts directory if it doesn't exist
+    sudo mkdir -p "$INSTALL_DIR/repo/scripts"
+    
     # Create configuration file for branch tracking
     sudo tee /etc/pine-ridge-waf.conf > /dev/null <<EOF
 REPO_URL=$REPO_URL
 GIT_BRANCH=$GIT_BRANCH
 INSTALL_DIR=$INSTALL_DIR
 EOF
+
+    # Generate sync script from comprehensive template
+    log "Generating sync script from template..."
+    
+    sudo tee "$INSTALL_DIR/repo/scripts/sync-repo.sh" > /dev/null <<'EOF'
+#!/bin/bash
+# scripts/sync-repo.sh - GitOps repository synchronization with branch support
+# Generated from template by Pine Ridge Bootstrap
+# Template version: 1.0.0 (WAF)
+
+set -euo pipefail
+
+# Source configuration
+source /etc/pine-ridge-waf.conf
+
+LOG_FILE="$INSTALL_DIR/logs/sync.log"
+LOCK_FILE="/var/run/waf-sync.lock"
+
+# Create logs directory if it doesn't exist
+mkdir -p "$(dirname "$LOG_FILE")"
+
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+error() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $1" | tee -a "$LOG_FILE"
+    exit 1
+}
+
+acquire_lock() {
+    if [[ -f "$LOCK_FILE" ]]; then
+        local pid
+        pid=$(cat "$LOCK_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            log "Another sync process is running (PID: $pid). Exiting."
+            exit 0
+        else
+            log "Removing stale lock file"
+            rm -f "$LOCK_FILE"
+        fi
+    fi
+
+    echo $$ > "$LOCK_FILE"
+    trap 'rm -f "$LOCK_FILE"' EXIT
+}
+
+check_git_changes() {
+    cd "$INSTALL_DIR/repo"
+
+    # Fix git dubious ownership issue
+    git config --global --add safe.directory "$INSTALL_DIR/repo"
+
+    # Set SSH environment for git operations
+    export GIT_SSH_COMMAND="ssh -i /root/.ssh/waf_gitops_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+
+    # Check current branch
+    local current_branch
+    current_branch=$(git branch --show-current)
+
+    if [[ "$current_branch" != "$GIT_BRANCH" ]]; then
+        log "Branch change detected: $current_branch -> $GIT_BRANCH"
+        git fetch origin "$GIT_BRANCH"
+        git checkout "$GIT_BRANCH"
+        git reset --hard "origin/$GIT_BRANCH"
+        return 0
+    fi
+
+    # Fetch latest changes for current branch
+    if ! git fetch origin "$GIT_BRANCH"; then
+        error "Failed to fetch repository changes. Check SSH key and repository access."
+    fi
+
+    # Check if there are new commits
+    local local_hash
+    local remote_hash
+
+    local_hash=$(git rev-parse HEAD)
+    remote_hash=$(git rev-parse "origin/$GIT_BRANCH")
+
+    if [[ "$local_hash" == "$remote_hash" ]]; then
+        log "Repository is up to date on branch $GIT_BRANCH"
+        return 1
+    else
+        log "New changes detected on $GIT_BRANCH: $local_hash -> $remote_hash"
+        return 0
+    fi
+}
+
+sync_repository() {
+    cd "$INSTALL_DIR/repo"
+
+    log "Pulling latest changes from branch $GIT_BRANCH..."
+
+    # Set SSH environment for git operations
+    export GIT_SSH_COMMAND="ssh -i /root/.ssh/waf_gitops_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+
+    if ! git pull origin "$GIT_BRANCH"; then
+        error "Failed to pull repository changes. Check SSH key and repository access."
+    fi
+
+    # Ensure scripts are executable after sync
+    find "$INSTALL_DIR/repo" -name "*.sh" -type f -exec chmod +x {} \;
+
+    # Validate WAF repository structure
+    if [[ ! -f "site.yml" ]]; then
+        error "Invalid repository structure: site.yml not found"
+    fi
+
+    if [[ ! -f "system-maintenance.yml" ]]; then
+        log "Warning: system-maintenance.yml not found, system tasks will be skipped"
+    fi
+
+    log "Repository synchronized successfully on branch $GIT_BRANCH"
+}
+
+verify_vault_access() {
+    log "Verifying vault password access..."
+
+    cd "$INSTALL_DIR/repo"
+
+    # Check if vault file exists
+    if [[ -f "inventory/group_vars/vault.yml" ]]; then
+        log "Testing vault password access..."
+
+        # Test that the vault password script exists and is executable
+        if [[ ! -x "/usr/local/bin/get-waf-vault-pass.sh" ]]; then
+            error "Vault password script not found or not executable: /usr/local/bin/get-waf-vault-pass.sh"
+        fi
+
+        # Test that we can read the vault password
+        if ! /usr/local/bin/get-waf-vault-pass.sh >/dev/null 2>&1; then
+            error "Cannot read vault password. Check /etc/pine-ridge-waf-vault-pass exists and is readable"
+        fi
+
+        # Test that Ansible can decrypt the vault file
+        if ! timeout 10 ansible-vault view inventory/group_vars/vault.yml >/dev/null 2>&1; then
+            error "Cannot decrypt vault file. Check vault password is correct"
+        fi
+
+        log "✓ Vault access verified successfully"
+    else
+        log "No vault file found - skipping vault verification"
+    fi
+}
+
+main() {
+    log "Starting WAF GitOps sync process for branch $GIT_BRANCH..."
+
+    acquire_lock
+
+    if check_git_changes; then
+        sync_repository
+        verify_vault_access
+        log "Sync completed successfully, Ansible will run next"
+    else
+        log "No changes to sync"
+        # Still verify vault access even if no changes
+        verify_vault_access
+    fi
+}
+
+main "$@"
+EOF
+
+    sudo chmod +x "$INSTALL_DIR/repo/scripts/sync-repo.sh"
+    log "✓ Generated comprehensive sync script for WAF"
 
     # Create systemd service for Ansible runs
     sudo tee /etc/systemd/system/waf-ansible.service > /dev/null <<'EOF'
@@ -603,7 +773,7 @@ while [[ $# -gt 0 ]]; do
             echo "Examples:"
             echo "  $0 --repo https://github.com/yourusername/pine-ridge-waf.git"
             echo "  $0 --interactive --repo https://github.com/yourusername/pine-ridge-waf.git"
-            echo "  $0 --repo https://github.com/yourusername/pine-ridge-waf.git --branch develop"
+            echo "  $0 --repo https://github.com/yourusername/pine-ridge-waf.git --branch feat/moving-to-ansible"
             echo "  $0 https://github.com/yourusername/pine-ridge-waf.git develop  # legacy format"
             exit 0
             ;;

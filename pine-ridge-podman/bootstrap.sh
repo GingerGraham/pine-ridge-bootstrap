@@ -231,11 +231,11 @@ clone_and_run() {
                 if [[ "$current_remote" == "$REPO_URL" ]]; then
                     log "Updating existing repository..."
                     sudo git fetch origin
-                    sudo git reset --hard origin/main 2>/dev/null || sudo git reset --hard origin/master 2>/dev/null || {
-                        log "Failed to reset to remote branch, re-cloning..."
+                    sudo git reset --hard "origin/$GIT_BRANCH" 2>/dev/null || {
+                        log "Failed to reset to remote branch $GIT_BRANCH, re-cloning..."
                         cd /
                         sudo rm -rf "$INSTALL_DIR/repo"
-                        sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+                        sudo git clone -b "$GIT_BRANCH" "$REPO_URL" "$INSTALL_DIR/repo"
                     }
                 else
                     log "Repository URL mismatch, re-cloning..."
@@ -249,16 +249,16 @@ clone_and_run() {
                 log "Cannot access remote, re-cloning..."
                 cd /
                 sudo rm -rf "$INSTALL_DIR/repo"
-                sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+                sudo git clone -b "$GIT_BRANCH" "$REPO_URL" "$INSTALL_DIR/repo"
             fi
         else
             log "Directory exists but is not a git repository, removing and cloning..."
             sudo rm -rf "$INSTALL_DIR/repo"
-            sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+            sudo git clone -b "$GIT_BRANCH" "$REPO_URL" "$INSTALL_DIR/repo"
         fi
     else
         log "Cloning repository: $REPO_URL"
-        sudo git clone "$REPO_URL" "$INSTALL_DIR/repo"
+        sudo git clone -b "$GIT_BRANCH" "$REPO_URL" "$INSTALL_DIR/repo"
     fi
     
     cd "$INSTALL_DIR/repo"
@@ -321,30 +321,186 @@ QUADLET_DIR=/etc/containers/systemd
 MANAGEMENT_USER=$USER
 EOF
 
-    # Create sync script for the service
+    # Generate sync script from comprehensive template
+    log "Generating sync script from template..."
+
     sudo tee "$INSTALL_DIR/repo/scripts/sync-repo-ansible.sh" > /dev/null <<'EOF'
 #!/bin/bash
-# Sync script for Ansible-based GitOps
+# scripts/sync-repo-ansible.sh - GitOps repository synchronization with branch support
+# Generated from template by Pine Ridge Bootstrap
+# Template version: 1.0.0 (Podman)
+
 set -euo pipefail
 
+# Source configuration
 source /etc/pine-ridge-podman.conf
-cd "$INSTALL_DIR/repo"
 
-# Set SSH environment for git operations
-export GIT_SSH_COMMAND="ssh -i /root/.ssh/podman_gitops_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+LOG_FILE="$INSTALL_DIR/logs/sync.log"
+LOCK_FILE="/var/run/podman-sync.lock"
 
-# Fetch and check for changes
-if git fetch origin "$GIT_BRANCH" && ! git diff --quiet HEAD "origin/$GIT_BRANCH"; then
-    echo "Changes detected, pulling updates..."
-    git reset --hard "origin/$GIT_BRANCH"
+# Create logs directory if it doesn't exist
+mkdir -p "$(dirname "$LOG_FILE")"
+
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+error() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $1" | tee -a "$LOG_FILE"
+    exit 1
+}
+
+acquire_lock() {
+    if [[ -f "$LOCK_FILE" ]]; then
+        local pid
+        pid=$(cat "$LOCK_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            log "Another sync process is running (PID: $pid). Exiting."
+            exit 0
+        else
+            log "Removing stale lock file"
+            rm -f "$LOCK_FILE"
+        fi
+    fi
+
+    echo $$ > "$LOCK_FILE"
+    trap 'rm -f "$LOCK_FILE"' EXIT
+}
+
+check_git_changes() {
+    cd "$INSTALL_DIR/repo"
+
+    # Fix git dubious ownership issue
+    git config --global --add safe.directory "$INSTALL_DIR/repo"
+
+    # Set SSH environment for git operations
+    export GIT_SSH_COMMAND="ssh -i /root/.ssh/podman_gitops_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+
+    # Check current branch
+    local current_branch
+    current_branch=$(git branch --show-current)
+
+    if [[ "$current_branch" != "$GIT_BRANCH" ]]; then
+        log "Branch change detected: $current_branch -> $GIT_BRANCH"
+        git fetch origin "$GIT_BRANCH"
+        git checkout "$GIT_BRANCH"
+        git reset --hard "origin/$GIT_BRANCH"
+        return 0
+    fi
+
+    # Fetch latest changes for current branch
+    if ! git fetch origin "$GIT_BRANCH"; then
+        error "Failed to fetch repository changes. Check SSH key and repository access."
+    fi
+
+    # Check if there are new commits
+    local local_hash
+    local remote_hash
+
+    local_hash=$(git rev-parse HEAD)
+    remote_hash=$(git rev-parse "origin/$GIT_BRANCH")
+
+    if [[ "$local_hash" == "$remote_hash" ]]; then
+        log "Repository is up to date on branch $GIT_BRANCH"
+        return 1
+    else
+        log "New changes detected on $GIT_BRANCH: $local_hash -> $remote_hash"
+        return 0
+    fi
+}
+
+sync_repository() {
+    cd "$INSTALL_DIR/repo"
+
+    log "Pulling latest changes from branch $GIT_BRANCH..."
+
+    # Set SSH environment for git operations
+    export GIT_SSH_COMMAND="ssh -i /root/.ssh/podman_gitops_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+
+    if ! git pull origin "$GIT_BRANCH"; then
+        error "Failed to pull repository changes. Check SSH key and repository access."
+    fi
+
+    # Ensure scripts are executable after sync
     find "$INSTALL_DIR/repo" -name "*.sh" -type f -exec chmod +x {} \;
-    echo "Repository updated successfully"
-else
-    echo "No changes detected"
-fi
+
+    # Validate Podman repository structure
+    if [[ ! -d "quadlets" ]]; then
+        error "Invalid repository structure: quadlets directory not found"
+    fi
+
+    if [[ ! -d "ansible" ]]; then
+        log "Warning: ansible directory not found, some automation may be unavailable"
+    fi
+
+    log "Repository synchronized successfully on branch $GIT_BRANCH"
+}
+
+trigger_deployment() {
+    log "Triggering quadlet deployment..."
+
+    if systemctl is-active --quiet quadlet-deploy.service 2>/dev/null; then
+        log "Deployment service is already running, skipping trigger"
+        return 0
+    fi
+
+    # Check if deployment service exists
+    if ! systemctl list-unit-files quadlet-deploy.service >/dev/null 2>&1; then
+        log "Deployment service not found, skipping deployment trigger"
+        return 0
+    fi
+
+    # Add better error handling for deployment trigger with timeout
+    local deploy_timeout=30  # 30 seconds to start the service
+
+    if timeout "$deploy_timeout" systemctl start quadlet-deploy.service 2>/dev/null; then
+        log "Deployment triggered successfully"
+
+        # Optional: Wait a bit to see if deployment starts properly
+        sleep 2
+        if systemctl is-active --quiet quadlet-deploy.service 2>/dev/null; then
+            log "Deployment service is running"
+        else
+            log "Warning: Deployment service started but is no longer active"
+        fi
+    else
+        local exit_code=$?
+        if [[ $exit_code -eq 124 ]]; then
+            log "Warning: Failed to trigger deployment service (timeout after ${deploy_timeout}s)"
+        else
+            log "Warning: Failed to trigger deployment service (exit code: $exit_code)"
+        fi
+        # Don't exit here - this shouldn't cause the sync to fail completely
+        return 1
+    fi
+}
+
+main() {
+    log "Starting Podman GitOps sync process for branch $GIT_BRANCH..."
+
+    acquire_lock
+
+    if check_git_changes; then
+        sync_repository
+        
+        # Execute Podman-specific post-sync actions
+        if trigger_deployment; then
+            log "Deployment trigger completed successfully"
+        else
+            log "Warning: Deployment trigger failed - this will be retried on next sync"
+        fi
+        
+        log "Sync completed successfully, Ansible will run next"
+    else
+        log "No changes to sync"
+    fi
+}
+
+main "$@"
 EOF
 
     sudo chmod +x "$INSTALL_DIR/repo/scripts/sync-repo-ansible.sh"
+    log "✓ Generated comprehensive sync script for Podman"
 
     # Create systemd service for Ansible runs
     sudo tee /etc/systemd/system/podman-ansible.service > /dev/null <<'EOF'
@@ -417,6 +573,7 @@ main() {
     log "Starting Podman Ansible bootstrap..."
     log "Repository: $REPO_URL"
     log "Branch: $GIT_BRANCH"
+    log "FORCE_INTERACTIVE: ${FORCE_INTERACTIVE:-false}"
     
     check_prerequisites
     install_ansible
@@ -431,12 +588,15 @@ main() {
     echo "Bootstrap log saved to: $LOG_FILE"
 }
 
-# Handle command line arguments (same pattern as WAF bootstrap)
+# Handle command line arguments
+FORCE_INTERACTIVE=false
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --help|-h)
             echo "Usage: $0 [OPTIONS] [--repo REPO_URL] [--branch BRANCH]"
             echo "Options:"
+            echo "  --interactive, -i          Force interactive mode (for compatibility)"
             echo "  --repo REPO_URL           Repository URL (default: https://github.com/yourusername/pine-ridge-podman.git)"
             echo "  --branch BRANCH           Git branch to use (default: main)"
             echo "  --help, -h                Show this help message"
@@ -446,9 +606,13 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Examples:"
             echo "  $0 --repo https://github.com/yourusername/pine-ridge-podman.git"
-            echo "  $0 --repo https://github.com/yourusername/pine-ridge-podman.git --branch develop"
+            echo "  $0 --repo https://github.com/yourusername/pine-ridge-podman.git --branch feat/moving-to-ansible"
             echo "  $0 https://github.com/yourusername/pine-ridge-podman.git develop  # legacy format"
             exit 0
+            ;;
+        --interactive|-i)
+            FORCE_INTERACTIVE=true
+            shift
             ;;
         --repo)
             if [[ -n "${2:-}" ]]; then
