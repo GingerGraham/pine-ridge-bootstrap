@@ -56,10 +56,14 @@ install_ansible() {
     # Install Ansible, Podman and required packages
     sudo dnf install -y ansible-core python3-pip podman podman-compose yq
     
+    # Set environment to avoid permission issues
+    export ANSIBLE_LOG_PATH=""  # Disable Ansible logging
+    export ANSIBLE_HOST_KEY_CHECKING=False
+    
     # Install minimal core collections needed for bootstrap
     log "Installing core Ansible collections..."
-    sudo ansible-galaxy collection install community.general
-    sudo ansible-galaxy collection install ansible.posix
+    sudo -E ansible-galaxy collection install community.general --force
+    sudo -E ansible-galaxy collection install ansible.posix --force
     
     # Note: All required collections will be installed from requirements.yml after repo clone
     
@@ -275,15 +279,25 @@ run_initial_deployment() {
         error "Ansible is not properly installed"
     fi
     
+    # Set Ansible environment to avoid permission issues
+    export ANSIBLE_LOG_PATH=""  # Disable Ansible logging to avoid permission conflicts
+    export ANSIBLE_HOST_KEY_CHECKING=False
+    export ANSIBLE_STDOUT_CALLBACK=default
+    
+    # Create Ansible log directory with proper permissions (optional)
+    sudo mkdir -p /var/log/ansible
+    sudo chmod 755 /var/log/ansible
+    sudo chown root:root /var/log/ansible
+    
     # Install any additional requirements from the repo
     if [[ -f "ansible/requirements.yml" ]]; then
         log "Installing Ansible collections from repository requirements..."
-        sudo ansible-galaxy collection install -r ansible/requirements.yml
+        sudo -E ansible-galaxy collection install -r ansible/requirements.yml --force
         
         # Verify critical collections are installed
         log "Verifying required collections installation..."
         for collection in "community.crypto" "containers.podman"; do
-            if sudo ansible-galaxy collection list | grep -q "$collection"; then
+            if sudo -E ansible-galaxy collection list | grep -q "$collection"; then
                 log "✓ $collection collection installed successfully"
             else
                 log "⚠ $collection collection not found after requirements install"
@@ -291,14 +305,14 @@ run_initial_deployment() {
         done
     elif [[ -f "requirements.yml" ]]; then
         log "Installing Ansible collections from repository..."
-        sudo ansible-galaxy collection install -r requirements.yml
+        sudo -E ansible-galaxy collection install -r requirements.yml --force
     else
         log "No requirements.yml found - skipping additional collection installation"
     fi
     
     # Run the bootstrap playbook
     log "Running initial Podman bootstrap playbook..."
-    if sudo ansible-playbook playbooks/bootstrap.yml; then
+    if sudo -E ansible-playbook playbooks/bootstrap.yml; then
         log "Initial bootstrap configuration completed successfully"
     else
         log "Initial bootstrap failed - this may be normal for first setup"
