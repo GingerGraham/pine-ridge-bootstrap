@@ -57,7 +57,7 @@ install_ansible() {
     sudo dnf install -y ansible-core python3-pip podman podman-compose yq
     
     # Set environment to avoid permission issues
-    export ANSIBLE_LOG_PATH=""  # Disable Ansible logging
+    export ANSIBLE_LOG_PATH="/dev/null"  # Explicitly disable Ansible logging
     export ANSIBLE_HOST_KEY_CHECKING=False
     
     # Install minimal core collections needed for bootstrap
@@ -280,14 +280,30 @@ run_initial_deployment() {
     fi
     
     # Set Ansible environment to avoid permission issues
-    export ANSIBLE_LOG_PATH=""  # Disable Ansible logging to avoid permission conflicts
+    export ANSIBLE_LOG_PATH="/dev/null"  # Explicitly disable Ansible logging
     export ANSIBLE_HOST_KEY_CHECKING=False
     export ANSIBLE_STDOUT_CALLBACK=default
     
-    # Create Ansible log directory with proper permissions (optional)
+    # Create Ansible log directory with proper permissions for future use
     sudo mkdir -p /var/log/ansible
     sudo chmod 755 /var/log/ansible
     sudo chown root:root /var/log/ansible
+    
+    # Create temporary ansible.cfg for bootstrap (without logging)
+    cat > /tmp/bootstrap-ansible.cfg <<EOF
+[defaults]
+inventory = inventory/hosts.yml
+roles_path = roles
+host_key_checking = False
+timeout = 30
+gathering = smart
+fact_caching = memory
+stdout_callback = yaml
+bin_ansible_callbacks = True
+# No log_path during bootstrap
+EOF
+    
+    export ANSIBLE_CONFIG="/tmp/bootstrap-ansible.cfg"
     
     # Install any additional requirements from the repo
     if [[ -f "ansible/requirements.yml" ]]; then
@@ -310,7 +326,7 @@ run_initial_deployment() {
         log "No requirements.yml found - skipping additional collection installation"
     fi
     
-    # Run the bootstrap playbook
+    # Run the bootstrap playbook with temporary config
     log "Running initial Podman bootstrap playbook..."
     if sudo -E ansible-playbook playbooks/bootstrap.yml; then
         log "Initial bootstrap configuration completed successfully"
@@ -318,6 +334,10 @@ run_initial_deployment() {
         log "Initial bootstrap failed - this may be normal for first setup"
         log "You can run 'sudo ansible-playbook playbooks/bootstrap.yml' manually after setup"
     fi
+    
+    # Clean up temporary config
+    rm -f /tmp/bootstrap-ansible.cfg
+    unset ANSIBLE_CONFIG
 }
 
 setup_ansible_gitops() {
