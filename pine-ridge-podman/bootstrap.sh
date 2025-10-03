@@ -296,47 +296,46 @@ run_initial_deployment() {
         log "No requirements.yml found - skipping additional collection installation"
     fi
     
-    # Run the playbook
-    log "Running Podman configuration playbook..."
-    if sudo ansible-playbook site.yml; then
-        log "Initial Podman configuration completed successfully"
+    # Run the bootstrap playbook
+    log "Running initial Podman bootstrap playbook..."
+    if sudo ansible-playbook playbooks/bootstrap.yml; then
+        log "Initial bootstrap configuration completed successfully"
     else
-        log "Initial configuration failed - this may be normal for first setup"
-        log "You can run 'sudo ansible-playbook site.yml' manually after setup"
+        log "Initial bootstrap failed - this may be normal for first setup"
+        log "You can run 'sudo ansible-playbook playbooks/bootstrap.yml' manually after setup"
     fi
 }
 
 setup_ansible_gitops() {
-    log "Setting up Ansible GitOps service..."
+    log "Setting up Pine Ridge GitOps automation chain..."
     
     # Create scripts directory if it doesn't exist
     sudo mkdir -p "$INSTALL_DIR/repo/scripts"
+    sudo mkdir -p "$INSTALL_DIR/logs"
     
     # Create configuration file for branch tracking
     sudo tee /etc/pine-ridge-podman.conf > /dev/null <<EOF
 REPO_URL=$REPO_URL
 GIT_BRANCH=$GIT_BRANCH
 INSTALL_DIR=$INSTALL_DIR
-QUADLET_DIR=/etc/containers/systemd
 MANAGEMENT_USER=$USER
 EOF
 
-    # Generate sync script from comprehensive template
-    log "Generating sync script from template..."
+    # Create git sync script that chains to service deployment
+    log "Creating git sync script with service deployment chaining..."
 
-    sudo tee "$INSTALL_DIR/repo/scripts/sync-repo-ansible.sh" > /dev/null <<'EOF'
+    sudo tee "$INSTALL_DIR/repo/scripts/git-sync.sh" > /dev/null <<'EOF'
 #!/bin/bash
-# scripts/sync-repo-ansible.sh - GitOps repository synchronization with branch support
-# Generated from template by Pine Ridge Bootstrap
-# Template version: 1.0.0 (Podman)
+# scripts/git-sync.sh - Git sync with service deployment chaining
+# Part of Pine Ridge systemd automation architecture
 
 set -euo pipefail
 
 # Source configuration
 source /etc/pine-ridge-podman.conf
 
-LOG_FILE="$INSTALL_DIR/logs/sync.log"
-LOCK_FILE="/var/run/podman-sync.lock"
+LOG_FILE="$INSTALL_DIR/logs/git-sync.log"
+LOCK_FILE="/var/run/pine-ridge-git-sync.lock"
 
 # Create logs directory if it doesn't exist
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -355,7 +354,7 @@ acquire_lock() {
         local pid
         pid=$(cat "$LOCK_FILE")
         if kill -0 "$pid" 2>/dev/null; then
-            log "Another sync process is running (PID: $pid). Exiting."
+            log "Another git sync process is running (PID: $pid). Exiting."
             exit 0
         else
             log "Removing stale lock file"
@@ -424,73 +423,69 @@ sync_repository() {
     # Ensure scripts are executable after sync
     find "$INSTALL_DIR/repo" -name "*.sh" -type f -exec chmod +x {} \;
 
-    # Validate Podman repository structure
-    if [[ ! -d "quadlets" ]]; then
-        error "Invalid repository structure: quadlets directory not found"
-    fi
-
+    # Validate ansible directory exists
     if [[ ! -d "ansible" ]]; then
-        log "Warning: ansible directory not found, some automation may be unavailable"
+        error "Invalid repository structure: ansible directory not found"
     fi
 
     log "Repository synchronized successfully on branch $GIT_BRANCH"
 }
 
-trigger_deployment() {
-    log "Triggering quadlet deployment..."
+trigger_service_deployment() {
+    log "Triggering service deployment via systemd..."
 
-    if systemctl is-active --quiet quadlet-deploy.service 2>/dev/null; then
-        log "Deployment service is already running, skipping trigger"
+    # Check if emergency mode is active
+    if [[ -f "$INSTALL_DIR/.emergency-mode" ]]; then
+        log "Emergency mode active - skipping service deployment"
         return 0
     fi
 
-    # Check if deployment service exists
-    if ! systemctl list-unit-files quadlet-deploy.service >/dev/null 2>&1; then
-        log "Deployment service not found, skipping deployment trigger"
+    # Chain to service deployment
+    if systemctl is-active --quiet pine-ridge-service-deployment.service 2>/dev/null; then
+        log "Service deployment already running, skipping trigger"
         return 0
     fi
 
-    # Add better error handling for deployment trigger with timeout
-    local deploy_timeout=30  # 30 seconds to start the service
+    # Trigger service deployment
+    local deploy_timeout=60  # 60 seconds for service deployment
 
-    if timeout "$deploy_timeout" systemctl start quadlet-deploy.service 2>/dev/null; then
-        log "Deployment triggered successfully"
-
-        # Optional: Wait a bit to see if deployment starts properly
+    if timeout "$deploy_timeout" systemctl start pine-ridge-service-deployment.service 2>/dev/null; then
+        log "Service deployment triggered successfully"
+        
+        # Wait a bit to see if deployment starts properly
         sleep 2
-        if systemctl is-active --quiet quadlet-deploy.service 2>/dev/null; then
-            log "Deployment service is running"
+        if systemctl is-active --quiet pine-ridge-service-deployment.service 2>/dev/null; then
+            log "Service deployment is running"
         else
-            log "Warning: Deployment service started but is no longer active"
+            log "Service deployment completed quickly"
         fi
     else
         local exit_code=$?
         if [[ $exit_code -eq 124 ]]; then
-            log "Warning: Failed to trigger deployment service (timeout after ${deploy_timeout}s)"
+            log "Warning: Service deployment timeout after ${deploy_timeout}s"
         else
-            log "Warning: Failed to trigger deployment service (exit code: $exit_code)"
+            log "Warning: Failed to trigger service deployment (exit code: $exit_code)"
         fi
-        # Don't exit here - this shouldn't cause the sync to fail completely
         return 1
     fi
 }
 
 main() {
-    log "Starting Podman GitOps sync process for branch $GIT_BRANCH..."
+    log "Starting Pine Ridge git sync process for branch $GIT_BRANCH..."
 
     acquire_lock
 
     if check_git_changes; then
         sync_repository
         
-        # Execute Podman-specific post-sync actions
-        if trigger_deployment; then
-            log "Deployment trigger completed successfully"
+        # Chain to service deployment
+        if trigger_service_deployment; then
+            log "Service deployment chain completed successfully"
         else
-            log "Warning: Deployment trigger failed - this will be retried on next sync"
+            log "Warning: Service deployment chain failed - will retry on next sync"
         fi
         
-        log "Sync completed successfully, Ansible will run next"
+        log "Git sync with service deployment chain completed"
     else
         log "No changes to sync"
     fi
@@ -499,41 +494,38 @@ main() {
 main "$@"
 EOF
 
-    sudo chmod +x "$INSTALL_DIR/repo/scripts/sync-repo-ansible.sh"
-    log "✓ Generated comprehensive sync script for Podman"
+    sudo chmod +x "$INSTALL_DIR/repo/scripts/git-sync.sh"
+    log "✓ Created git sync script with service deployment chaining"
 
-    # Create systemd service for Ansible runs
-    sudo tee /etc/systemd/system/podman-ansible.service > /dev/null <<'EOF'
+    # Create systemd service for git sync (triggered externally, e.g., by webhook or timer)
+    sudo tee /etc/systemd/system/pine-ridge-git-sync.service > /dev/null <<'EOF'
 [Unit]
-Description=Podman Ansible Configuration
-After=network-online.target podman.socket
+Description=Pine Ridge Git Sync
+After=network-online.target
 Wants=network-online.target
-Requires=podman.socket
 
 [Service]
 Type=oneshot
 User=root
 EnvironmentFile=/etc/pine-ridge-podman.conf
-WorkingDirectory=/opt/pine-ridge-podman/repo/ansible
-ExecStartPre=/opt/pine-ridge-podman/repo/scripts/sync-repo-ansible.sh
-ExecStart=/usr/bin/ansible-playbook site.yml
+ExecStart=/opt/pine-ridge-podman/repo/scripts/git-sync.sh
 StandardOutput=journal
 StandardError=journal
-TimeoutSec=600
+TimeoutSec=300
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # Create timer for Podman config (less frequent than WAF)
-    sudo tee /etc/systemd/system/podman-ansible.timer > /dev/null <<'EOF'
+    # Create timer for regular git sync (every 5-10 minutes)
+    sudo tee /etc/systemd/system/pine-ridge-git-sync.timer > /dev/null <<'EOF'
 [Unit]
-Description=Podman Ansible Configuration Timer
-Requires=podman-ansible.service
+Description=Pine Ridge Git Sync Timer
+Requires=pine-ridge-git-sync.service
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=5min
+OnBootSec=1min
+OnUnitActiveSec=7min
 Persistent=true
 
 [Install]
@@ -541,31 +533,44 @@ WantedBy=timers.target
 EOF
 
     sudo systemctl daemon-reload
-    sudo systemctl enable --now podman-ansible.timer
+    sudo systemctl enable --now pine-ridge-git-sync.timer
     
-    log "GitOps services configured and started"
+    log "Pine Ridge GitOps automation chain configured and started"
 }
 
 show_completion_status() {
-    log "Podman bootstrap completed successfully!"
+    log "Pine Ridge Podman bootstrap completed successfully!"
     
     echo ""
     echo "=== SETUP COMPLETE ==="
     echo "✓ Ansible and Podman installed and configured"
     echo "✓ Repository cloned and configured"
-    echo "✓ GitOps services enabled"
-    echo "✓ Podman socket enabled"
+    echo "✓ Pine Ridge automation chain enabled"
+    echo "✓ Systemd services and timers configured"
     echo ""
     
-    echo "=== NEXT STEPS ==="
-    echo "1. Your Podman setup will auto-update from Git every 5 minutes"
-    echo "2. Monitor services: journalctl -u podman-ansible.service -f"
-    echo "3. Check timer status: systemctl list-timers podman-ansible.timer"
-    echo "4. Manual deployment: cd $INSTALL_DIR/repo/ansible && sudo ansible-playbook site.yml"
-    echo "5. Add quadlets to $INSTALL_DIR/repo/quadlets/ and push to Git"
+    echo "=== AUTOMATION ARCHITECTURE ==="
+    echo "🔄 Git Sync: Every 7 minutes (pine-ridge-git-sync.timer)"
+    echo "⚡ Service Deployment: Triggered by git changes (pine-ridge-service-deployment.service)"  
+    echo "🔧 Infrastructure Check: Daily maintenance (pine-ridge-infrastructure-check.timer)"
     echo ""
+    
+    echo "=== MONITORING COMMANDS ==="
+    echo "• Git sync status: journalctl -u pine-ridge-git-sync.service -f"
+    echo "• Service deployment: journalctl -u pine-ridge-service-deployment.service -f"
+    echo "• Infrastructure check: journalctl -u pine-ridge-infrastructure-check.service -f"
+    echo "• Timer status: systemctl list-timers pine-ridge-*"
+    echo "• Manual deployment: cd $INSTALL_DIR/repo/ansible && sudo ansible-playbook playbooks/service-deployment.yml"
+    echo ""
+    
+    echo "=== MANAGEMENT COMMANDS ==="
+    echo "• Central management: sudo $INSTALL_DIR/repo/scripts/pine-ridge-manage.sh [status|deploy|stop|emergency]"
+    echo "• Full rebuild: sudo ansible-playbook playbooks/full-deployment.yml"
+    echo "• Emergency stop: sudo ansible-playbook playbooks/emergency-stop.yml"
+    echo ""
+    
     echo "=== SERVICE STATUS ==="
-    sudo systemctl status podman-ansible.timer --no-pager --lines=5 || true
+    sudo systemctl status pine-ridge-git-sync.timer --no-pager --lines=3 || true
     echo ""
 }
 
