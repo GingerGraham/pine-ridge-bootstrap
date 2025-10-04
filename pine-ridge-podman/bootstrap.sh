@@ -328,11 +328,11 @@ EOF
     
     # Run the bootstrap playbook with temporary config
     log "Running initial Podman bootstrap playbook..."
-    if sudo -E ansible-playbook playbooks/bootstrap.yml; then
+    if sudo -E ansible-playbook bootstrap.yml; then
         log "Initial bootstrap configuration completed successfully"
     else
         log "Initial bootstrap failed - this may be normal for first setup"
-        log "You can run 'sudo ansible-playbook playbooks/bootstrap.yml' manually after setup"
+        log "You can run 'sudo ansible-playbook bootstrap.yml' manually after setup"
     fi
     
     # Clean up temporary config
@@ -594,13 +594,13 @@ show_completion_status() {
     echo "• Service deployment: journalctl -u pine-ridge-service-deployment.service -f"
     echo "• Infrastructure check: journalctl -u pine-ridge-infrastructure-check.service -f"
     echo "• Timer status: systemctl list-timers pine-ridge-*"
-    echo "• Manual deployment: cd $INSTALL_DIR/repo/ansible && sudo ansible-playbook playbooks/service-deployment.yml"
+    echo "• Manual deployment: cd $INSTALL_DIR/repo/ansible && sudo ansible-playbook service-deployment.yml"
     echo ""
     
     echo "=== MANAGEMENT COMMANDS ==="
     echo "• Central management: sudo $INSTALL_DIR/repo/scripts/pine-ridge-manage.sh [status|deploy|stop|emergency]"
-    echo "• Full rebuild: sudo ansible-playbook playbooks/full-deployment.yml"
-    echo "• Emergency stop: sudo ansible-playbook playbooks/emergency-stop.yml"
+    echo "• Full rebuild: sudo ansible-playbook full-deployment.yml"
+    echo "• Emergency stop: sudo ansible-playbook emergency-stop.yml"
     echo ""
     
     echo "=== SERVICE STATUS ==="
