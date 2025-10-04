@@ -330,6 +330,15 @@ EOF
     log "Running initial Podman bootstrap playbook..."
     if sudo -E ansible-playbook bootstrap.yml; then
         log "Initial bootstrap configuration completed successfully"
+        
+        # Run initial service deployment
+        log "Running initial service deployment..."
+        if sudo ansible-playbook service-deployment.yml; then
+            log "Initial service deployment completed successfully"
+        else
+            log "Initial service deployment failed - services may need manual deployment"
+            log "You can run 'sudo ansible-playbook service-deployment.yml' manually"
+        fi
     else
         log "Initial bootstrap failed - this may be normal for first setup"
         log "You can run 'sudo ansible-playbook bootstrap.yml' manually after setup"
