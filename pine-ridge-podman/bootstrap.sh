@@ -292,7 +292,7 @@ run_initial_deployment() {
     # Create temporary ansible.cfg for bootstrap (without logging)
     cat > /tmp/bootstrap-ansible.cfg <<EOF
 [defaults]
-inventory = inventory/hosts.yml
+inventory = $INSTALL_DIR/repo/ansible/inventory/hosts.yml
 roles_path = roles
 host_key_checking = False
 timeout = 30
