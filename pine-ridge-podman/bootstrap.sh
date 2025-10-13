@@ -327,21 +327,23 @@ EOF
     fi
     
     # Run the bootstrap playbook with temporary config
-    log "Running initial Podman bootstrap playbook..."
-    if sudo -E ansible-playbook bootstrap.yml; then
+    # IMPORTANT: Limit to current hostname so we only configure this host
+    CURRENT_HOSTNAME=$(hostname -f)
+    log "Running initial Podman bootstrap playbook for host: $CURRENT_HOSTNAME..."
+    if sudo -E ansible-playbook bootstrap.yml --limit "$CURRENT_HOSTNAME"; then
         log "Initial bootstrap configuration completed successfully"
         
         # Run initial service deployment
         log "Running initial service deployment..."
-        if sudo ansible-playbook service-deployment.yml; then
+        if sudo ansible-playbook service-deployment.yml --limit "$CURRENT_HOSTNAME"; then
             log "Initial service deployment completed successfully"
         else
             log "Initial service deployment failed - services may need manual deployment"
-            log "You can run 'sudo ansible-playbook service-deployment.yml' manually"
+            log "You can run 'sudo ansible-playbook service-deployment.yml --limit \"$CURRENT_HOSTNAME\"' manually"
         fi
     else
         log "Initial bootstrap failed - this may be normal for first setup"
-        log "You can run 'sudo ansible-playbook bootstrap.yml' manually after setup"
+        log "You can run 'sudo ansible-playbook bootstrap.yml --limit \"$CURRENT_HOSTNAME\"' manually after setup"
     fi
     
     # Clean up temporary config
@@ -603,13 +605,13 @@ show_completion_status() {
     echo "• Service deployment: journalctl -u pine-ridge-service-deployment.service -f"
     echo "• Infrastructure check: journalctl -u pine-ridge-infrastructure-check.service -f"
     echo "• Timer status: systemctl list-timers pine-ridge-*"
-    echo "• Manual deployment: cd $INSTALL_DIR/repo/ansible && sudo ansible-playbook service-deployment.yml"
+    echo "• Manual deployment: cd $INSTALL_DIR/repo/ansible && sudo ansible-playbook service-deployment.yml --limit \"\$(hostname -f)\""
     echo ""
     
     echo "=== MANAGEMENT COMMANDS ==="
     echo "• Central management: sudo $INSTALL_DIR/repo/scripts/pine-ridge-manage.sh [status|deploy|stop|emergency]"
-    echo "• Full rebuild: sudo ansible-playbook full-deployment.yml"
-    echo "• Emergency stop: sudo ansible-playbook emergency-stop.yml"
+    echo "• Full rebuild: sudo ansible-playbook full-deployment.yml --limit \"\$(hostname -f)\""
+    echo "• Emergency stop: sudo ansible-playbook emergency-stop.yml --limit \"\$(hostname -f)\""
     echo ""
     
     echo "=== SERVICE STATUS ==="
