@@ -1,0 +1,21 @@
+# Pine Ridge Bootstrap - .gitignore
+
+# SonarQube
+.scannerwork/
+.sonar/
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.log
