@@ -22,17 +22,17 @@ error() {
 
 check_prerequisites() {
     log "Checking prerequisites..."
-    
+
     # Check if running as non-root with sudo
     if [[ $EUID -eq 0 ]]; then
         error "This script should not be run as root. Run as a user with sudo privileges."
     fi
-    
+
     # Check sudo access
     if ! sudo -n true 2>/dev/null; then
         error "This script requires sudo privileges. Please run with a user in the wheel group."
     fi
-    
+
     # Check if git is installed, install if missing
     if ! command -v git &> /dev/null; then
         log "Git not found, installing..."
@@ -40,109 +40,126 @@ check_prerequisites() {
     else
         log "Git is already installed"
     fi
-    
+
     # Check if curl is installed (usually present but good to verify)
     if ! command -v curl &> /dev/null; then
         log "curl not found, installing..."
         sudo dnf install -y curl
     fi
-    
+
     log "Prerequisites check completed"
 }
 
 install_ansible() {
     log "Installing Ansible and Podman..."
-    
+
     # Install Ansible, Podman and required packages
     sudo dnf install -y ansible-core python3-pip podman podman-compose yq
-    
+
     # Set environment to avoid permission issues
     export ANSIBLE_LOG_PATH="/dev/null"  # Explicitly disable Ansible logging
     export ANSIBLE_HOST_KEY_CHECKING=False
-    
+
     # Install minimal core collections needed for bootstrap
     log "Installing core Ansible collections..."
     sudo -E ansible-galaxy collection install community.general --force
     sudo -E ansible-galaxy collection install ansible.posix --force
-    
+
     # Note: All required collections will be installed from requirements.yml after repo clone
-    
+
     # Enable podman socket
     log "Enabling podman socket..."
     sudo systemctl enable --now podman.socket
-    
+
     log "Ansible and Podman installed successfully"
 }
 
 setup_ssh_auth() {
     log "Setting up SSH authentication..."
-    
+
     local ssh_dir="/root/.ssh"
     local ssh_key="$ssh_dir/podman_gitops_ed25519"
     local ssh_config="$ssh_dir/config"
-    
+
     # Create SSH directory if it doesn't exist
     sudo mkdir -p "$ssh_dir"
     sudo chmod 700 "$ssh_dir"
-    
-    # Always remove existing SSH keys to ensure clean generation
-    log "Removing any existing SSH keys..."
-    sudo rm -f "$ssh_key" "$ssh_key.pub"
-    
-    # Verify removal worked
-    if [[ -f "$ssh_key" ]]; then
-        log "Warning: SSH key file still exists after removal attempt"
-        sudo chmod 666 "$ssh_key" 2>/dev/null || true
-        sudo rm -f "$ssh_key"
-    fi
-    
-    log "Generating SSH key for GitOps..."
-    # Use yes to automatically answer prompts and redirect to avoid issues
-    echo | sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "podman-gitops@$(hostname)" 2>/dev/null || \
-    sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "podman-gitops@$(hostname)" < /dev/null
-    
-    sudo chmod 600 "$ssh_key"
-    sudo chmod 644 "$ssh_key.pub"
-    
-    log "SSH key generated: $ssh_key.pub"
-    
-    # Always show the SSH key and setup instructions
-    echo
-    echo "=== SSH KEY FOR GITHUB ==="
-    echo "Add this SSH public key to your GitHub repository as a deploy key:"
-    echo
-    sudo cat "$ssh_key.pub"
-    echo
-    echo "Steps:"
-    echo "1. Go to your GitHub repo → Settings → Deploy keys"
-    echo "2. Click 'Add deploy key'"
-    echo "3. Give it a title like 'Podman GitOps Server'"
-    echo "4. Paste the above public key"
-    echo "5. Do NOT check 'Allow write access' (read-only is safer)"
-    echo "6. Click 'Add key'"
-    echo
-    
-    # Auto-detect if running interactively or from pipe
-    if [ -t 0 ]; then
-        # Running interactively - can read user input
-        read -p "Press Enter after adding the deploy key to GitHub..."
+
+    # Check if we should rotate the SSH key
+    local should_generate=false
+
+    if [[ "${ROTATE_SSH_KEY:-false}" == "true" ]]; then
+        log "Force SSH key rotation requested - removing existing keys..."
+        sudo rm -f "$ssh_key" "$ssh_key.pub"
+        should_generate=true
+    elif [[ ! -f "$ssh_key" ]]; then
+        log "SSH key does not exist - will generate new key"
+        should_generate=true
     else
-        # Running from pipe (curl | bash) - use simple approach
-        echo "Script is running from pipe. Waiting 90 seconds for you to add the SSH key..."
-        echo "This should be enough time to add the key to GitHub."
-        echo
-        
-        # Count down so user knows what's happening
-        for i in {90..1}; do
-            if [ $((i % 10)) -eq 0 ]; then
-                echo "Waiting... $i seconds remaining"
-            fi
-            sleep 1
-        done
-        
-        echo "Continuing with setup..."
+        log "SSH key already exists: $ssh_key"
     fi
-    
+
+    # Generate new SSH key if needed
+    if [[ "$should_generate" == "true" ]]; then
+        # Verify removal worked (if we removed)
+        if [[ -f "$ssh_key" ]]; then
+            log "Warning: SSH key file still exists after removal attempt"
+            sudo chmod 666 "$ssh_key" 2>/dev/null || true
+            sudo rm -f "$ssh_key"
+        fi
+
+        log "Generating SSH key for GitOps..."
+        # Use yes to automatically answer prompts and redirect to avoid issues
+        echo | sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "podman-gitops@$(hostname)" 2>/dev/null || \
+        sudo ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "podman-gitops@$(hostname)" < /dev/null
+
+        sudo chmod 600 "$ssh_key"
+        sudo chmod 644 "$ssh_key.pub"
+
+        log "SSH key generated: $ssh_key.pub"
+    fi
+
+    # Show the SSH key and setup instructions only if key was just generated
+    if [[ "$should_generate" == "true" ]]; then
+        echo
+        echo "=== SSH KEY FOR GITHUB ==="
+        echo "Add this SSH public key to your GitHub repository as a deploy key:"
+        echo
+        sudo cat "$ssh_key.pub"
+        echo
+        echo "Steps:"
+        echo "1. Go to your GitHub repo → Settings → Deploy keys"
+        echo "2. Click 'Add deploy key'"
+        echo "3. Give it a title like 'Podman GitOps Server'"
+        echo "4. Paste the above public key"
+        echo "5. Do NOT check 'Allow write access' (read-only is safer)"
+        echo "6. Click 'Add key'"
+        echo
+
+        # Auto-detect if running interactively or from pipe
+        if [ -t 0 ]; then
+            # Running interactively - can read user input
+            read -p "Press Enter after adding the deploy key to GitHub..."
+        else
+            # Running from pipe (curl | bash) - use simple approach
+            echo "Script is running from pipe. Waiting 90 seconds for you to add the SSH key..."
+            echo "This should be enough time to add the key to GitHub."
+            echo
+
+            # Count down so user knows what's happening
+            for i in {90..1}; do
+                if [ $((i % 10)) -eq 0 ]; then
+                    echo "Waiting... $i seconds remaining"
+                fi
+                sleep 1
+            done
+
+            echo "Continuing with setup..."
+        fi
+    else
+        log "Using existing SSH key - no GitHub deploy key update needed"
+    fi
+
     # Create/update SSH config for GitHub
     sudo tee "$ssh_config" > /dev/null <<EOF
 # Podman GitOps SSH configuration
@@ -155,7 +172,7 @@ Host github.com
     UserKnownHostsFile /dev/null
     LogLevel ERROR
 EOF
-    
+
     sudo chmod 600 "$ssh_config"
 }
 
@@ -172,11 +189,11 @@ convert_repo_url_to_ssh() {
 
 clone_and_run() {
     log "Cloning repository..."
-    
+
     # Test SSH connection first
     local ssh_test_result
     ssh_test_result=$(sudo ssh -T git@github.com 2>&1 || true)
-    
+
     if echo "$ssh_test_result" | grep -q "You've successfully authenticated, but GitHub does not provide shell access"; then
         log "SSH connection to GitHub verified successfully"
     else
@@ -188,7 +205,7 @@ clone_and_run() {
         echo "Testing SSH connection manually:"
         echo "$ssh_test_result"
         echo
-        
+
         # Auto-detect if running interactively or from pipe for error handling
         if [ -t 0 ]; then
             read -p "Continue anyway? (y/N): " -n 1 -r
@@ -201,19 +218,19 @@ clone_and_run() {
             log "If deployment fails, verify SSH key setup and try again"
         fi
     fi
-    
+
     # Create install directory if it doesn't exist
     sudo mkdir -p "$INSTALL_DIR"
-    
+
     # Handle existing repository more robustly
     if [[ -d "$INSTALL_DIR/repo" ]]; then
         if [[ -d "$INSTALL_DIR/repo/.git" ]]; then
             log "Repository directory exists, updating..."
             cd "$INSTALL_DIR/repo"
-            
+
             # Ensure proper ownership before git operations
             sudo chown -R root:root "$INSTALL_DIR/repo"
-            
+
             # Check if we can access the remote
             if sudo git remote get-url origin >/dev/null 2>&1; then
                 current_remote=$(sudo git remote get-url origin)
@@ -249,46 +266,205 @@ clone_and_run() {
         log "Cloning repository: $REPO_URL"
         sudo git clone -b "$GIT_BRANCH" "$REPO_URL" "$INSTALL_DIR/repo"
     fi
-    
+
     cd "$INSTALL_DIR/repo"
-    
+
     # Set git configuration for branch tracking
     sudo git config user.name "Podman GitOps System"
     sudo git config user.email "podman-gitops@$(hostname)"
-    
+
     # Disable filemode tracking to prevent permission conflicts
     sudo git config core.filemode false
-    
+
     # Disable git hooks during service operations to prevent permission conflicts
     sudo git config core.hooksPath /dev/null
-    
+
     # Ensure scripts are executable after clone/update
     sudo find "$INSTALL_DIR/repo" -name "*.sh" -type f -exec chmod +x {} \;
-    
+
     log "Repository cloned successfully"
+}
+
+setup_vault_password() {
+    log "Setting up Ansible vault password..."
+
+    local vault_pass_file="/etc/pine-ridge-podman-vault-pass"
+    local vault_script="/usr/local/bin/get-podman-vault-pass.sh"
+    local vault_group="podman-vault"
+
+    echo ""
+    echo "=== ANSIBLE VAULT PASSWORD SETUP ==="
+    echo "The Ansible vault contains encrypted secrets for container deployments."
+    echo "This will be stored securely for system service access."
+    echo ""
+
+    # Create vault group if it doesn't exist
+    if ! getent group "$vault_group" > /dev/null 2>&1; then
+        sudo groupadd "$vault_group"
+        log "Created $vault_group group"
+    fi
+
+    # Add current user to vault group
+    sudo usermod -a -G "$vault_group" "$USER"
+    log "Added $USER to $vault_group group"
+
+    # Check if vault password already exists
+    local current_password=""
+    if [[ -f "$vault_pass_file" ]]; then
+        current_password=$(sudo cat "$vault_pass_file" 2>/dev/null || echo "")
+    fi
+
+    local vault_password=""
+
+    # Determine if we need to prompt for password
+    if [[ -z "${vault_password:-}" ]] || [[ "${current_password:-}" == "VAULT_PASSWORD_NOT_SET" ]] || [[ -z "${current_password:-}" ]]; then
+        # Auto-detect if running interactively or from pipe for password input
+        if [ -t 0 ] || [[ "${FORCE_INTERACTIVE:-false}" == "true" ]]; then
+            # Running interactively - can read user input
+            local vault_password_input
+            local vault_password_confirm
+
+            while true; do
+                echo "Enter the Ansible vault password:"
+                read -p "Password: " -s vault_password_input < /dev/tty
+                echo
+
+                if [[ -z "$vault_password_input" ]]; then
+                    echo "Password cannot be empty. Please try again."
+                    continue
+                fi
+
+                echo "Confirm the password:"
+                read -p "Password (again): " -s vault_password_confirm < /dev/tty
+                echo
+
+                if [[ "$vault_password_input" == "$vault_password_confirm" ]]; then
+                    vault_password="$vault_password_input"
+                    break
+                else
+                    echo "Passwords do not match. Please try again."
+                fi
+            done
+        else
+            # Running from pipe (curl | bash) - cannot read user input
+            log "Non-interactive mode detected. Using placeholder vault password."
+            log "You can update this later by re-running the script with --interactive flag"
+            vault_password="VAULT_PASSWORD_NOT_SET"
+        fi
+    else
+        log "Vault password already configured"
+        vault_password="$current_password"
+
+        # If running interactively and password exists, ask if they want to update
+        if [ -t 0 ] || [[ "${FORCE_INTERACTIVE:-false}" == "true" ]]; then
+            if [[ "$vault_password" != "VAULT_PASSWORD_NOT_SET" ]]; then
+                echo "Vault password is already configured."
+                read -p "Do you want to update it? (y/N): " -n 1 -r < /dev/tty
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    local vault_password_input
+                    local vault_password_confirm
+
+                    while true; do
+                        echo "Enter the new Ansible vault password:"
+                        read -p "Password: " -s vault_password_input < /dev/tty
+                        echo
+
+                        if [[ -z "$vault_password_input" ]]; then
+                            echo "Password cannot be empty. Please try again."
+                            continue
+                        fi
+
+                        echo "Confirm the password:"
+                        read -p "Password (again): " -s vault_password_confirm < /dev/tty
+                        echo
+
+                        if [[ "$vault_password_input" == "$vault_password_confirm" ]]; then
+                            vault_password="$vault_password_input"
+                            break
+                        else
+                            echo "Passwords do not match. Please try again."
+                        fi
+                    done
+                fi
+            fi
+        fi
+    fi
+
+    # Store vault password with root-only permissions initially
+    echo "$vault_password" | sudo tee "$vault_pass_file" > /dev/null
+    sudo chmod 640 "$vault_pass_file"
+    sudo chown root:"$vault_group" "$vault_pass_file"
+
+    # Create vault password script for Ansible
+    sudo tee "$vault_script" > /dev/null <<'EOF'
+#!/bin/bash
+cat /etc/pine-ridge-podman-vault-pass
+EOF
+
+    sudo chmod 750 "$vault_script"
+    sudo chown root:"$vault_group" "$vault_script"
+
+    # Test if group membership is immediately active
+    if groups | grep -q "$vault_group"; then
+        log "✓ Group membership active - vault access ready"
+    else
+        log "⚠ Note: Run 'newgrp $vault_group' or log out/in to activate vault access"
+    fi
+
+    # Verify vault access with Ansible if vault file exists
+    if [[ "${vault_password:-}" != "VAULT_PASSWORD_NOT_SET" ]] && [[ -n "${vault_password:-}" ]]; then
+        cd "$INSTALL_DIR/repo/ansible"
+        if [[ -f "vault.yml" ]] || [[ -f "group_vars/vault.yml" ]] || [[ -f "inventory/group_vars/all/vault.yml" ]]; then
+            log "Testing vault password with existing vault file..."
+            local vault_test_file=""
+            if [[ -f "vault.yml" ]]; then
+                vault_test_file="vault.yml"
+            elif [[ -f "group_vars/vault.yml" ]]; then
+                vault_test_file="group_vars/vault.yml"
+            elif [[ -f "inventory/group_vars/all/vault.yml" ]]; then
+                vault_test_file="inventory/group_vars/all/vault.yml"
+            fi
+
+            if [[ -n "$vault_test_file" ]]; then
+                if timeout 10 sudo ansible-vault view "$vault_test_file" --vault-password-file "$vault_script" >/dev/null 2>&1; then
+                    log "✓ Vault password verified with Ansible"
+                else
+                    log "⚠ Vault password verification with Ansible failed - check password"
+                fi
+            fi
+        else
+            log "No vault file found yet - password will be verified during first deployment"
+        fi
+    else
+        log "Skipping Ansible vault verification (placeholder password)"
+    fi
+
+    echo "Vault password setup completed!"
+    echo ""
 }
 
 run_initial_deployment() {
     log "Running initial Podman configuration..."
-    
+
     cd "$INSTALL_DIR/repo/ansible"
-    
+
     # Test ansible configuration first
     log "Testing Ansible configuration..."
     if ! ansible --version >/dev/null 2>&1; then
         error "Ansible is not properly installed"
     fi
-    
+
     # Set Ansible environment to avoid permission issues
     export ANSIBLE_LOG_PATH="/dev/null"  # Explicitly disable Ansible logging
     export ANSIBLE_HOST_KEY_CHECKING=False
     export ANSIBLE_STDOUT_CALLBACK=default
-    
+
     # Create Ansible log directory with proper permissions for future use
     sudo mkdir -p /var/log/ansible
     sudo chmod 755 /var/log/ansible
     sudo chown root:root /var/log/ansible
-    
+
     # Create temporary ansible.cfg for bootstrap (without logging)
     cat > /tmp/bootstrap-ansible.cfg <<EOF
 [defaults]
@@ -302,14 +478,14 @@ stdout_callback = yaml
 bin_ansible_callbacks = True
 # No log_path during bootstrap
 EOF
-    
+
     export ANSIBLE_CONFIG="/tmp/bootstrap-ansible.cfg"
-    
+
     # Install any additional requirements from the repo
     if [[ -f "ansible/requirements.yml" ]]; then
         log "Installing Ansible collections from repository requirements..."
         sudo -E ansible-galaxy collection install -r ansible/requirements.yml --force
-        
+
         # Verify critical collections are installed
         log "Verifying required collections installation..."
         for collection in "community.crypto" "containers.podman"; do
@@ -325,14 +501,14 @@ EOF
     else
         log "No requirements.yml found - skipping additional collection installation"
     fi
-    
+
     # Run the bootstrap playbook with temporary config
     # IMPORTANT: Limit to current hostname so we only configure this host
     CURRENT_HOSTNAME=$(hostname -f)
     log "Running initial Podman bootstrap playbook for host: $CURRENT_HOSTNAME..."
     if sudo -E ansible-playbook bootstrap.yml --limit "$CURRENT_HOSTNAME"; then
         log "Initial bootstrap configuration completed successfully"
-        
+
         # Run initial service deployment
         log "Running initial service deployment..."
         if sudo ansible-playbook service-deployment.yml --limit "$CURRENT_HOSTNAME"; then
@@ -345,7 +521,7 @@ EOF
         log "Initial bootstrap failed - this may be normal for first setup"
         log "You can run 'sudo ansible-playbook bootstrap.yml --limit \"$CURRENT_HOSTNAME\"' manually after setup"
     fi
-    
+
     # Clean up temporary config
     rm -f /tmp/bootstrap-ansible.cfg
     unset ANSIBLE_CONFIG
@@ -353,11 +529,11 @@ EOF
 
 setup_ansible_gitops() {
     log "Setting up Pine Ridge GitOps automation chain..."
-    
+
     # Create scripts directory if it doesn't exist
     sudo mkdir -p "$INSTALL_DIR/repo/scripts"
     sudo mkdir -p "$INSTALL_DIR/logs"
-    
+
     # Create configuration file for branch tracking
     sudo tee /etc/pine-ridge-podman.conf > /dev/null <<EOF
 REPO_URL=$REPO_URL
@@ -496,7 +672,7 @@ trigger_service_deployment() {
 
     if timeout "$deploy_timeout" systemctl start pine-ridge-service-deployment.service 2>/dev/null; then
         log "Service deployment triggered successfully"
-        
+
         # Wait a bit to see if deployment starts properly
         sleep 2
         if systemctl is-active --quiet pine-ridge-service-deployment.service 2>/dev/null; then
@@ -522,14 +698,14 @@ main() {
 
     if check_git_changes; then
         sync_repository
-        
+
         # Chain to service deployment
         if trigger_service_deployment; then
             log "Service deployment chain completed successfully"
         else
             log "Warning: Service deployment chain failed - will retry on next sync"
         fi
-        
+
         log "Git sync with service deployment chain completed"
     else
         log "No changes to sync"
@@ -579,27 +755,39 @@ EOF
 
     sudo systemctl daemon-reload
     sudo systemctl enable --now pine-ridge-git-sync.timer
-    
+
     log "Pine Ridge GitOps automation chain configured and started"
 }
 
 show_completion_status() {
     log "Pine Ridge Podman bootstrap completed successfully!"
-    
+
     echo ""
     echo "=== SETUP COMPLETE ==="
     echo "✓ Ansible and Podman installed and configured"
     echo "✓ Repository cloned and configured"
+    echo "✓ Ansible vault password configured"
     echo "✓ Pine Ridge automation chain enabled"
     echo "✓ Systemd services and timers configured"
     echo ""
-    
+
+    # Check vault password status
+    if [[ -f "/etc/pine-ridge-podman-vault-pass" ]]; then
+        local vault_pass_content
+        vault_pass_content=$(sudo cat /etc/pine-ridge-podman-vault-pass 2>/dev/null || echo "")
+        if [[ "$vault_pass_content" == "VAULT_PASSWORD_NOT_SET" ]]; then
+            echo "⚠️  IMPORTANT: Placeholder vault password detected"
+            echo "   Update it by re-running: $0 --interactive"
+            echo ""
+        fi
+    fi
+
     echo "=== AUTOMATION ARCHITECTURE ==="
     echo "🔄 Git Sync: Every 7 minutes (pine-ridge-git-sync.timer)"
-    echo "⚡ Service Deployment: Triggered by git changes (pine-ridge-service-deployment.service)"  
+    echo "⚡ Service Deployment: Triggered by git changes (pine-ridge-service-deployment.service)"
     echo "🔧 Infrastructure Check: Daily maintenance (pine-ridge-infrastructure-check.timer)"
     echo ""
-    
+
     echo "=== MONITORING COMMANDS ==="
     echo "• Git sync status: journalctl -u pine-ridge-git-sync.service -f"
     echo "• Service deployment: journalctl -u pine-ridge-service-deployment.service -f"
@@ -607,13 +795,15 @@ show_completion_status() {
     echo "• Timer status: systemctl list-timers pine-ridge-*"
     echo "• Manual deployment: cd $INSTALL_DIR/repo/ansible && sudo ansible-playbook service-deployment.yml --limit \"\$(hostname -f)\""
     echo ""
-    
+
     echo "=== MANAGEMENT COMMANDS ==="
     echo "• Central management: sudo $INSTALL_DIR/repo/scripts/pine-ridge-manage.sh [status|deploy|stop|emergency]"
     echo "• Full rebuild: sudo ansible-playbook full-deployment.yml --limit \"\$(hostname -f)\""
     echo "• Emergency stop: sudo ansible-playbook emergency-stop.yml --limit \"\$(hostname -f)\""
+    echo "• Rotate SSH key: $0 --rotate-ssh-key"
+    echo "• Update vault password: $0 --interactive"
     echo ""
-    
+
     echo "=== SERVICE STATUS ==="
     sudo systemctl status pine-ridge-git-sync.timer --no-pager --lines=3 || true
     echo ""
@@ -624,29 +814,33 @@ main() {
     log "Repository: $REPO_URL"
     log "Branch: $GIT_BRANCH"
     log "FORCE_INTERACTIVE: ${FORCE_INTERACTIVE:-false}"
-    
+    log "ROTATE_SSH_KEY: ${ROTATE_SSH_KEY:-false}"
+
     check_prerequisites
     install_ansible
     convert_repo_url_to_ssh
     setup_ssh_auth
     clone_and_run
+    setup_vault_password       # Setup Ansible vault password
     run_initial_deployment      # Test deployment
     setup_ansible_gitops       # Enable ongoing automation
     show_completion_status
-    
+
     log "Podman bootstrap completed successfully"
     echo "Bootstrap log saved to: $LOG_FILE"
 }
 
 # Handle command line arguments
 FORCE_INTERACTIVE=false
+ROTATE_SSH_KEY=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --help|-h)
             echo "Usage: $0 [OPTIONS] [--repo REPO_URL] [--branch BRANCH]"
             echo "Options:"
-            echo "  --interactive, -i          Force interactive mode (for compatibility)"
+            echo "  --interactive, -i          Force interactive mode (for vault password prompts)"
+            echo "  --rotate-ssh-key          Force SSH key rotation (regenerate deploy key)"
             echo "  --repo REPO_URL           Repository URL (default: https://github.com/yourusername/pine-ridge-podman.git)"
             echo "  --branch BRANCH           Git branch to use (default: main)"
             echo "  --help, -h                Show this help message"
@@ -657,11 +851,17 @@ while [[ $# -gt 0 ]]; do
             echo "Examples:"
             echo "  $0 --repo https://github.com/yourusername/pine-ridge-podman.git"
             echo "  $0 --repo https://github.com/yourusername/pine-ridge-podman.git --branch feat/moving-to-ansible"
+            echo "  $0 --rotate-ssh-key  # Regenerate SSH deploy key"
+            echo "  $0 --interactive     # Force interactive mode for vault password"
             echo "  $0 https://github.com/yourusername/pine-ridge-podman.git develop  # legacy format"
             exit 0
             ;;
         --interactive|-i)
             FORCE_INTERACTIVE=true
+            shift
+            ;;
+        --rotate-ssh-key)
+            ROTATE_SSH_KEY=true
             shift
             ;;
         --repo)
