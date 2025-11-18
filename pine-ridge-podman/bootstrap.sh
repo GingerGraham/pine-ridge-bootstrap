@@ -474,9 +474,12 @@ host_key_checking = False
 timeout = 30
 gathering = smart
 fact_caching = memory
-stdout_callback = yaml
+stdout_callback = ansible.builtin.default
 bin_ansible_callbacks = True
 # No log_path during bootstrap
+
+[callback_default]
+result_format = yaml
 EOF
 
     export ANSIBLE_CONFIG="/tmp/bootstrap-ansible.cfg"
