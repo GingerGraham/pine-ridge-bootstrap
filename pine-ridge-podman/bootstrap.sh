@@ -92,7 +92,7 @@ setup_ssh_auth() {
         log "Force SSH key rotation requested - removing existing keys..."
         sudo rm -f "$ssh_key" "$ssh_key.pub"
         should_generate=true
-    elif [[ ! -f "$ssh_key" ]]; then
+    elif ! sudo test -f "$ssh_key"; then
         log "SSH key does not exist - will generate new key"
         should_generate=true
     else
@@ -102,7 +102,7 @@ setup_ssh_auth() {
     # Generate new SSH key if needed
     if [[ "$should_generate" == "true" ]]; then
         # Verify removal worked (if we removed)
-        if [[ -f "$ssh_key" ]]; then
+        if sudo test -f "$ssh_key"; then
             log "Warning: SSH key file still exists after removal attempt"
             sudo chmod 666 "$ssh_key" 2>/dev/null || true
             sudo rm -f "$ssh_key"
