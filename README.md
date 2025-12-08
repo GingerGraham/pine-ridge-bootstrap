@@ -22,6 +22,26 @@ Bootstrap script for configuring a Podman container host to deploy containers us
 curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-podman/bootstrap.sh | bash -s -- --repo https://github.com/yourusername/pine-ridge-podman.git
 ```
 
+### 🐧 [Linux/macOS Setup](/linux-setup/linux-setup-bootstrap.md)
+Bootstrap script for automated Linux and macOS configuration management using Ansible GitOps.
+
+**Quick Start (Read-Only Lab Machine):**
+```bash
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/linux-setup/bootstrap.sh | bash -s -- https://github.com/yourusername/linux-config.git
+```
+
+**Quick Start (Development Workstation):**
+```bash
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/linux-setup/bootstrap.sh | bash -s -- --interactive https://github.com/yourusername/linux-config.git
+```
+
+**Supported Platforms:**
+- Fedora/RHEL (CentOS, Rocky, Alma)
+- Ubuntu/Debian (Mint, Pop!_OS)
+- SUSE/openSUSE (SLES, Leap, Tumbleweed)
+- Arch Linux (Manjaro, EndeavourOS)
+- macOS (via Homebrew)
+
 ## Key Features
 
 ### 🔒 **Secure GitOps Deployment**
@@ -62,7 +82,8 @@ Both bootstrap scripts fully support:
 ## Update Frequencies
 
 - **WAF**: Updates every 10 minutes (infrastructure changes less frequently)
-- **Podman**: Updates every 5 minutes (container deployments change more frequently)
+- **Podman**: Updates every 7 minutes (container deployments change frequently)
+- **Linux/macOS Setup**: Updates every 7 minutes (system configuration changes moderately)
 
 ## Architecture
 
@@ -82,12 +103,12 @@ Both bootstrap scripts fully support:
 
 ## Getting Started
 
-1. **Choose your project** (WAF or Podman)
-2. **Prepare your private repository** with the project configuration
+1. **Choose your project** (WAF, Podman, or Linux/macOS Setup)
+2. **Prepare your repository** with the project configuration (can be public for Linux/macOS Setup)
 3. **Run the bootstrap script** on your target server
-4. **Add the SSH deploy key** to your GitHub repository
+4. **Add SSH key to GitHub** (for private repos or dev mode)
 5. **Configure secrets** (if using Ansible Vault)
-6. **Monitor deployment** through systemd services
+6. **Monitor deployment** through systemd services (Linux) or launchd (macOS)
 
 ## 🎯 Templated Sync Script System
 
