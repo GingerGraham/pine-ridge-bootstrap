@@ -36,7 +36,6 @@ This bootstrap script is highly opinionated to the design requirements of the Pi
 - [Repository Structure Requirements](#repository-structure-requirements)
 - [Support](#support)
 
-
 ## What This Script Does
 
 The bootstrap script performs the following operations:
@@ -44,10 +43,11 @@ The bootstrap script performs the following operations:
 1. **Ansible Installation**: Installs Ansible Core and required collections for system management
 2. **SSH Authentication Setup**: Generates an SSH deploy key for secure GitHub repository access
 3. **Repository Cloning**: Clones the WAF configuration repository to `/opt/pine-ridge-waf`
-4. **Vault Password Configuration**: Securely stores the Ansible vault password for encrypted secrets
-5. **Initial Deployment**: Runs the initial WAF configuration playbook
-6. **GitOps Services**: Sets up systemd services and timers for automated configuration updates
-7. **Security Configuration**: Configures proper permissions and secure access
+4. **Environment Configuration**: Writes `/etc/pine-ridge-waf.conf` recording the deployment mode (`dev`, `preprod`, or `prod`) and tracking branch or tag
+5. **Vault Password Configuration**: Securely stores the Ansible vault password for encrypted secrets
+6. **Initial Deployment**: Runs the initial WAF configuration playbook
+7. **GitOps Services**: Sets up systemd services and timers for automated configuration updates
+8. **Security Configuration**: Configures proper permissions and secure access
 
 ## Prerequisites
 
@@ -61,51 +61,40 @@ The bootstrap script performs the following operations:
 ### Basic Usage (Recommended)
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git
+# Development host (default environment)
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment dev
+
+# Pre-production host (always tracks main HEAD)
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment preprod
+
+# Production host (deploys latest semver tag)
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment prod
 ```
 
-**Legacy format (still supported):**
-```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- https://github.com/GingerGraham/pine-ridge-waf.git
-```
+> **Note**: `--environment` defaults to `dev` if omitted. For preprod and prod hosts always specify it explicitly.
 
 ### Interactive Mode for SSH Sessions
 
 When running the script via SSH or when you need to ensure interactive prompts work:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git
-```
-
-**Legacy format:**
-```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment dev
 ```
 
 ### Advanced Usage with Custom Branch
 
-```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git --branch develop
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git --branch feat/moving-to-ansible
-```
+`--branch` applies to `dev` environments only. `preprod` is always forced to `main`; `prod` ignores branch and deploys the latest semver tag.
 
-**Legacy format:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- https://github.com/GingerGraham/pine-ridge-waf.git develop
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- https://github.com/GingerGraham/pine-ridge-waf.git feat/moving-to-ansible
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment dev --branch develop
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment dev --branch feat/moving-to-ansible
 ```
 
 ### Interactive Mode with Custom Branch
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git --branch develop
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git --branch feat/moving-to-ansible
-```
-
-**Legacy format:**
-```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git develop
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive https://github.com/GingerGraham/pine-ridge-waf.git feat/moving-to-ansible
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment dev --branch develop
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment dev --branch feat/moving-to-ansible
 ```
 
 ### Local Execution
@@ -117,20 +106,17 @@ wget https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pi
 # Make it executable
 chmod +x bootstrap.sh
 
-# Run with named arguments (recommended)
-./bootstrap.sh --repo https://github.com/GingerGraham/pine-ridge-waf.git
+# Development host
+sudo ./bootstrap.sh --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment dev
 
-# Run with interactive mode
-./bootstrap.sh --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git
+# Development host with interactive vault setup and a specific branch
+sudo ./bootstrap.sh --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment dev --branch feat/moving-to-ansible
 
-# Run with custom branch (including pathed branches)
-./bootstrap.sh --repo https://github.com/GingerGraham/pine-ridge-waf.git --branch develop
-./bootstrap.sh --repo https://github.com/GingerGraham/pine-ridge-waf.git --branch feat/moving-to-ansible
+# Pre-production host
+sudo ./bootstrap.sh --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment preprod
 
-# Legacy positional arguments still work
-./bootstrap.sh https://github.com/GingerGraham/pine-ridge-waf.git
-./bootstrap.sh --interactive https://github.com/GingerGraham/pine-ridge-waf.git
-./bootstrap.sh https://github.com/GingerGraham/pine-ridge-waf.git feat/moving-to-ansible
+# Production host
+sudo ./bootstrap.sh --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment prod
 ```
 
 ### Command Line Options
@@ -140,46 +126,55 @@ chmod +x bootstrap.sh
 curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --help
 
 # Available options:
-#   --interactive, -i          Force interactive mode for vault password setup
-#   --repo REPO_URL           Repository URL (default: https://github.com/yourusername/pine-ridge-waf.git)
-#   --branch BRANCH           Git branch to use (default: main)
-#   --help, -h                Show help message
-#
-# Legacy positional arguments are still supported:
-#   REPO_URL BRANCH
+#   --repo <URL>             Repository URL (HTTPS or SSH; required)
+#   --environment <ENV>      Deployment mode: dev, preprod, or prod (default: dev)
+#   --branch <BRANCH>        Git branch for dev environments only (default: main)
+#                            preprod is always fixed to main; prod ignores this flag
+#   --interactive, -i        Force interactive mode for vault password prompts
+#   --help, -h               Show help message
 ```
 
 ## When to Use Each Method
 
 ### 🖥️ **IP KVM Console (Production Servers)**
+
 Use the basic method - the script will automatically detect console interaction:
+
 ```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment prod
 ```
 
 ### 🔐 **SSH Sessions (Remote Management)**
+
 Use interactive mode to ensure vault password prompts work correctly:
+
 ```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment dev
 ```
 
 ### 🤖 **Automated Deployment (CI/CD, Scripts)**
+
 Use basic mode - vault password setup will be skipped and can be configured later:
+
 ```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git
+curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment preprod
 ```
 
 ### 🔧 **Development/Testing**
+
 Download and run locally for easier debugging with custom branches:
+
 ```bash
 wget https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh
 chmod +x bootstrap.sh
-./bootstrap.sh --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git --branch develop
-./bootstrap.sh --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git --branch feat/moving-to-ansible
+sudo ./bootstrap.sh --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment dev --branch develop
+sudo ./bootstrap.sh --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment dev --branch feat/moving-to-ansible
 ```
 
 ### 🔄 **Re-running After Partial Setup**
+
 The script intelligently handles partial completions:
+
 - **Existing SSH keys**: Automatically regenerated
 - **Existing repository**: Updated or re-cloned as needed
 - **Placeholder vault password**: Will prompt for real password in interactive mode
@@ -210,6 +205,7 @@ During the bootstrap process, the script will:
 The script handles vault password setup differently depending on how it's executed:
 
 **Interactive Mode (Console, SSH with --interactive flag):**
+
 - Prompts you to enter the Ansible vault password interactively
 - Confirms the password to prevent typos
 - Stores it securely in `/etc/pine-ridge-waf-vault-pass` with group-based access
@@ -218,17 +214,20 @@ The script handles vault password setup differently depending on how it's execut
 - **Note**: If group access isn't immediately active, you can run `newgrp waf-vault` or log out/in
 
 **Non-Interactive Mode (curl | bash without --interactive):**
+
 - Skips interactive password prompts to avoid hanging
 - Creates a placeholder password file
 - Provides instructions for setting up the password later
 
 **Re-running the Script:**
+
 - Detects if a placeholder password exists and prompts for a real one (when interactive)
 - Asks if you want to update an existing real password
 - Automatically handles existing vault configurations
 
 **Manual Setup Later:**
 If the script ran in non-interactive mode, you can set up the vault password later by:
+
 ```bash
 # Re-run with interactive mode
 curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --interactive --repo https://github.com/GingerGraham/pine-ridge-waf.git
@@ -242,21 +241,23 @@ sudo /opt/pine-ridge-waf/repo/scripts/setup-vault-password.sh
 The script creates systemd services for GitOps automation:
 
 - **`waf-ansible.service`**: Runs Ansible playbooks to apply WAF configuration
-- **`waf-ansible.timer`**: Triggers configuration updates every 10 minutes (less frequent than Podman due to infrastructure nature)
-- **Configuration**: Stored in `/etc/pine-ridge-waf.conf`
-- **Sync Script**: Automatically created at `/opt/pine-ridge-waf/repo/scripts/sync-repo.sh`
+- **`waf-ansible.timer`**: Triggers configuration updates every 10 minutes
+- **Configuration**: Stored in `/etc/pine-ridge-waf.conf` (includes `ENVIRONMENT`, `GIT_BRANCH`, `INSTALL_DIR`, `REPO_URL`)
+- **Sync Script**: Provided by the repository at `scripts/sync-repo.sh` — the bootstrap validates it exists before enabling the services
 
 ## Post-Installation
 
 ### Monitoring and Management
 
 **Check service status:**
+
 ```bash
 sudo systemctl status waf-ansible.timer
 sudo systemctl list-timers waf-ansible.timer
 ```
 
 **View logs:**
+
 ```bash
 # Real-time logs
 sudo journalctl -u waf-ansible.service -f
@@ -266,6 +267,7 @@ sudo journalctl -u waf-ansible.service --since "1 hour ago"
 ```
 
 **Manual deployment:**
+
 ```bash
 cd /opt/pine-ridge-waf/repo
 sudo ansible-playbook site.yml
@@ -290,12 +292,14 @@ sudo ansible-playbook site.yml
 ### Troubleshooting
 
 **SSH Connection Issues:**
+
 ```bash
 # Test SSH connection to GitHub
 sudo ssh -T git@github.com
 ```
 
 **Ansible Vault Issues:**
+
 ```bash
 # Test vault password
 sudo ansible-vault view /opt/pine-ridge-waf/repo/inventory/group_vars/vault.yml
@@ -317,6 +321,7 @@ curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/ma
 ```
 
 **Interactive Mode Not Working:**
+
 ```bash
 # If running via SSH and prompts don't appear, try:
 # 1. Download and run locally
@@ -329,6 +334,7 @@ curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/ma
 ```
 
 **Re-running After Failures:**
+
 ```bash
 # The script handles partial completions gracefully and can be re-run safely
 # It will detect existing components and update or recreate them as needed
@@ -340,6 +346,7 @@ sudo rm -f /root/.ssh/waf_gitops_ed25519*
 ```
 
 **Service Debugging:**
+
 ```bash
 # Check service status
 sudo systemctl status waf-ansible.service
@@ -353,8 +360,11 @@ sudo systemctl list-timers waf-ansible.timer
 # Test sync script manually
 sudo /opt/pine-ridge-waf/repo/scripts/sync-repo.sh
 
-# Verify sync script exists (created by bootstrap)
+# Verify sync script exists (provided by the WAF repository)
 ls -la /opt/pine-ridge-waf/repo/scripts/sync-repo.sh
+
+# Check deployment source configuration
+switch-branch --status
 ```
 
 ## Security Considerations
@@ -371,10 +381,11 @@ Your WAF repository should contain:
 - `site.yml` - Main Ansible playbook
 - `inventory/` - Ansible inventory configuration
 - `inventory/group_vars/vault.yml` - Encrypted secrets (optional)
-- `scripts/` - Directory for management scripts (created by bootstrap)
+- `scripts/sync-repo.sh` - Repository synchronisation script (required by the GitOps timer)
+- `scripts/switch-branch.sh` - Deployment source management (required for `switch-branch` host command)
 - Ansible roles for WAF components (firewall, nginx, etc.)
 
-**Note**: The `scripts/sync-repo.sh` file is automatically generated by the bootstrap script using a standardized template system. This ensures consistent functionality across all Pine Ridge projects while allowing for WAF-specific customizations. The generated script includes comprehensive logging, locking, vault verification, and branch support.
+> **Note**: The bootstrap validates that `scripts/sync-repo.sh` exists in the cloned repository before enabling the systemd services. If it is missing, the bootstrap will error at that stage.
 
 ## Support
 

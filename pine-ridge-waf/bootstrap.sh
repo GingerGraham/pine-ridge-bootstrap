@@ -2,10 +2,10 @@
 # pine-ridge-waf/bootstrap.sh - Bootstrap Pine Ridge WAF with environment-aware GitOps
 #
 # Bootstraps a WAF host into one of three deployment modes:
-#   dev     - Tracks a configurable branch (default: main). Use switch-branch.sh to change.
+#   dev     - Tracks a configurable branch (default: main). Use switch-branch to change.
 #   preprod - Tracks main HEAD. Any commit to main auto-deploys.
 #   prod    - Deploys the latest semver-tagged release automatically.
-#             Use switch-branch.sh --pin-tag for rollback to a specific tag.
+#             Use switch-branch --pin-tag for rollback to a specific tag.
 #
 # Usage:
 #   sudo ./bootstrap.sh --repo <REPO_URL> --environment <dev|preprod|prod> [OPTIONS]
@@ -60,16 +60,16 @@ Options:
 Environments:
   dev      Tracks a configurable branch (default: main).
            To switch branch on the running host:
-             sudo /opt/pine-ridge-waf/repo/scripts/switch-branch.sh <branch>
+             sudo switch-branch <branch>
 
   preprod  Always tracks main HEAD.
            Any commit merged to main is automatically deployed.
 
   prod     Deploys the latest semver-tagged release.
            To pin to a specific tag for rollback:
-             sudo /opt/pine-ridge-waf/repo/scripts/switch-branch.sh --pin-tag v1.2.3
+             sudo switch-branch --pin-tag v1.2.3
            To resume auto-latest:
-             sudo /opt/pine-ridge-waf/repo/scripts/switch-branch.sh --clear-tag
+             sudo switch-branch --clear-tag
 
 Examples:
   # Development WAF (Proxmox or local)
@@ -231,15 +231,26 @@ EOF
         done
     fi
 
-    # Verify SSH connection
+    # Verify SSH connection - explicitly use the deploy key so that we test
+    # the correct identity regardless of the HOME env var (important when the
+    # script is invoked via 'curl | sudo bash' where HOME may not be /root).
     local ssh_test
-    ssh_test=$(ssh -T git@github.com 2>&1 || true)
+    ssh_test=$(ssh -i "$ssh_key" -o IdentitiesOnly=yes \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -T git@github.com 2>&1 || true)
     if echo "$ssh_test" | grep -q "successfully authenticated"; then
         log "SSH connection to GitHub verified"
     else
         log "WARNING: SSH connection test inconclusive - continuing anyway"
         log "SSH test output: ${ssh_test}"
     fi
+
+    # Export GIT_SSH_COMMAND so all subsequent git operations in this script
+    # use the deploy key explicitly, rather than relying on ~/.ssh/config
+    # (which may not resolve to /root/.ssh/config when HOME != /root).
+    export GIT_SSH_COMMAND="ssh -i ${ssh_key} -o IdentitiesOnly=yes \
+-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+    log "GIT_SSH_COMMAND set to use deploy key: ${ssh_key}"
 }
 
 # ── Step 4: Convert URL to SSH ────────────────────────────────────────────────
@@ -379,7 +390,7 @@ create_config() {
     tee /etc/pine-ridge-waf.conf > /dev/null <<EOF
 # Pine Ridge WAF GitOps Configuration
 # Managed by: pine-ridge-bootstrap/pine-ridge-waf/bootstrap.sh
-# To change source branch/tag: /opt/pine-ridge-waf/repo/scripts/switch-branch.sh
+# To change source branch/tag: sudo switch-branch [--status|<branch>|--pin-tag <tag>|--clear-tag]
 
 REPO_URL=${REPO_URL}
 ENVIRONMENT=${ENVIRONMENT}
@@ -569,18 +580,18 @@ show_summary() {
 
     if [[ "$ENVIRONMENT" == "prod" ]]; then
         echo "  Source       : latest semver release tag"
-        echo "  Rollback     : sudo ${INSTALL_DIR}/repo/scripts/switch-branch.sh --pin-tag v1.2.3"
-        echo "  Auto-latest  : sudo ${INSTALL_DIR}/repo/scripts/switch-branch.sh --clear-tag"
+        echo "  Rollback     : sudo switch-branch --pin-tag v1.2.3"
+        echo "  Auto-latest  : sudo switch-branch --clear-tag"
     else
         echo "  Branch       : ${GIT_BRANCH}"
-        echo "  Switch branch: sudo ${INSTALL_DIR}/repo/scripts/switch-branch.sh <branch>"
+        echo "  Switch branch: sudo switch-branch <branch>"
     fi
 
     echo
     echo "  Monitor      : journalctl -u waf-ansible.service -f"
     echo "  Status       : systemctl list-timers waf-ansible.timer"
     echo "  Manual run   : systemctl start waf-ansible.service"
-    echo "  Show state   : ${INSTALL_DIR}/repo/scripts/switch-branch.sh --status"
+    echo "  Show state   : switch-branch --status"
     echo "  Recurring    : waf-ansible.timer runs every 10 minutes"
     echo "=========================================="
     echo
