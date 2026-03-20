@@ -131,6 +131,7 @@ curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/ma
 #   --branch <BRANCH>        Git branch for dev environments only (default: main)
 #                            preprod is always fixed to main; prod ignores this flag
 #   --interactive, -i        Force interactive mode for vault password prompts
+#   --debug, --verbose, -v   Enable verbose troubleshooting output
 #   --help, -h               Show help message
 ```
 

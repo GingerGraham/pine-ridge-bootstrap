@@ -15,18 +15,20 @@
 #   --environment <ENV>    Deployment mode: dev, preprod, or prod. Default: dev.
 #   --branch <BRANCH>      Git branch for dev/preprod. Default: main.
 #   --interactive          Force interactive mode (prompts for vault password).
+#   --debug, --verbose     Enable verbose troubleshooting output.
 #   --help                 Show this help.
 
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
-SCRIPT_VERSION="2026-03-20.1"
+SCRIPT_VERSION="2026-03-20.2"
 REPO_URL=""
 GIT_BRANCH="main"
 ENVIRONMENT="dev"
 INSTALL_DIR="/opt/pine-ridge-waf"
 FORCE_INTERACTIVE=false
+DEBUG=false
 
 LOG_FILE="/tmp/waf-bootstrap-$(date +%s).log"
 touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/dev/null"
@@ -35,6 +37,12 @@ touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/dev/null"
 
 log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+debug() {
+    if [[ "$DEBUG" == "true" ]]; then
+        log "DEBUG: $1"
+    fi
 }
 
 error() {
@@ -56,6 +64,7 @@ Options:
   --branch <BRANCH>         Git branch for dev only (default: main)
                             (preprod is always forced to main)
   --interactive             Force interactive mode for vault password setup
+    --debug, --verbose        Enable verbose troubleshooting output
   --help                    Show this help
 
 Environments:
@@ -117,6 +126,10 @@ while [[ $# -gt 0 ]]; do
             FORCE_INTERACTIVE=true
             shift
             ;;
+        --debug|--verbose|-v)
+            DEBUG=true
+            shift
+            ;;
         --help|-h)
             usage
             ;;
@@ -156,9 +169,9 @@ normalize_repo_url() {
     fi
 
     if [[ "$REPO_URL" != "$original_url" ]]; then
-        log "Normalized repo URL: '${original_url}' -> '${REPO_URL}'"
+        debug "Normalized repo URL: '${original_url}' -> '${REPO_URL}'"
     else
-        log "DEBUG: Repo URL unchanged by normalization: '${REPO_URL}'"
+        debug "Repo URL unchanged by normalization: '${REPO_URL}'"
     fi
 }
 
@@ -279,13 +292,13 @@ EOF
     # (which may not resolve to /root/.ssh/config when HOME != /root).
     export GIT_SSH_COMMAND="ssh -i ${ssh_key} -o IdentitiesOnly=yes \
 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-    log "GIT_SSH_COMMAND set to use deploy key: ${ssh_key}"
+    debug "GIT_SSH_COMMAND set to use deploy key: ${ssh_key}"
 }
 
 # ── Step 4: Convert URL to SSH ────────────────────────────────────────────────
 
 convert_repo_url() {
-    log "DEBUG: REPO_URL before conversion: '${REPO_URL}'"
+    debug "REPO_URL before conversion: '${REPO_URL}'"
     normalize_repo_url
 }
 
@@ -294,15 +307,17 @@ convert_repo_url() {
 clone_repository() {
     normalize_repo_url
     log "Cloning repository..."
-    log "DEBUG: REPO_URL at clone time: '${REPO_URL}'"
-    log "DEBUG: GIT_SSH_COMMAND: '${GIT_SSH_COMMAND:-not set}'"
-    log "DEBUG: ENVIRONMENT: '${ENVIRONMENT}', GIT_BRANCH: '${GIT_BRANCH}'"
+    debug "REPO_URL at clone time: '${REPO_URL}'"
+    debug "GIT_SSH_COMMAND: '${GIT_SSH_COMMAND:-not set}'"
+    debug "ENVIRONMENT: '${ENVIRONMENT}', GIT_BRANCH: '${GIT_BRANCH}'"
     # Quick connectivity check with verbose SSH before attempting git clone
     local ssh_check
-    ssh_check=$(GIT_SSH_COMMAND="ssh -i /root/.ssh/waf_gitops_ed25519 -o IdentitiesOnly=yes \
+    if [[ "$DEBUG" == "true" ]]; then
+        ssh_check=$(GIT_SSH_COMMAND="ssh -i /root/.ssh/waf_gitops_ed25519 -o IdentitiesOnly=yes \
 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -v" \
-        git ls-remote "${REPO_URL}" HEAD 2>&1 | head -30 || true)
-    log "DEBUG: git ls-remote output: ${ssh_check}"
+            git ls-remote "${REPO_URL}" HEAD 2>&1 | head -30 || true)
+        debug "git ls-remote output: ${ssh_check}"
+    fi
 
     mkdir -p "${INSTALL_DIR}/logs"
 
@@ -329,13 +344,13 @@ reclone_repository() {
     local branch_arg="${1:-}"
 
     rm -rf "${INSTALL_DIR}/repo"
-    log "DEBUG: reclone_repository - REPO_URL='${REPO_URL}' branch_arg='${branch_arg}'"
-    log "DEBUG: reclone_repository - GIT_SSH_COMMAND='${GIT_SSH_COMMAND:-not set}'"
+    debug "reclone_repository - REPO_URL='${REPO_URL}' branch_arg='${branch_arg}'"
+    debug "reclone_repository - GIT_SSH_COMMAND='${GIT_SSH_COMMAND:-not set}'"
     if [[ -n "$branch_arg" ]]; then
-        log "DEBUG: running: git clone -b '${branch_arg}' '${REPO_URL}' '${INSTALL_DIR}/repo'"
+        debug "running: git clone -b '${branch_arg}' '${REPO_URL}' '${INSTALL_DIR}/repo'"
         git clone -b "$branch_arg" "$REPO_URL" "${INSTALL_DIR}/repo"
     else
-        log "DEBUG: running: git clone '${REPO_URL}' '${INSTALL_DIR}/repo'"
+        debug "running: git clone '${REPO_URL}' '${INSTALL_DIR}/repo'"
         git clone "$REPO_URL" "${INSTALL_DIR}/repo"
     fi
 }
