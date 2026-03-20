@@ -257,8 +257,10 @@ EOF
 
 convert_repo_url() {
     log "DEBUG: REPO_URL before conversion: '${REPO_URL}'"
-    if [[ "$REPO_URL" =~ ^https://github\.com/(.+?)(\.git)?$ ]]; then
-        REPO_URL="git@github.com:${BASH_REMATCH[1]}.git"
+    if [[ "$REPO_URL" =~ ^https://github\.com/(.+)$ ]]; then
+        local repo_path="${BASH_REMATCH[1]}"
+        repo_path="${repo_path%.git}"
+        REPO_URL="git@github.com:${repo_path}.git"
         log "Converted repo URL to SSH: ${REPO_URL}"
     else
         log "DEBUG: URL did not match HTTPS pattern - using as-is: '${REPO_URL}'"
