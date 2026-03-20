@@ -256,9 +256,12 @@ EOF
 # ── Step 4: Convert URL to SSH ────────────────────────────────────────────────
 
 convert_repo_url() {
+    log "DEBUG: REPO_URL before conversion: '${REPO_URL}'"
     if [[ "$REPO_URL" =~ ^https://github\.com/(.+?)(\.git)?$ ]]; then
         REPO_URL="git@github.com:${BASH_REMATCH[1]}.git"
         log "Converted repo URL to SSH: ${REPO_URL}"
+    else
+        log "DEBUG: URL did not match HTTPS pattern - using as-is: '${REPO_URL}'"
     fi
 }
 
@@ -266,6 +269,15 @@ convert_repo_url() {
 
 clone_repository() {
     log "Cloning repository..."
+    log "DEBUG: REPO_URL at clone time: '${REPO_URL}'"
+    log "DEBUG: GIT_SSH_COMMAND: '${GIT_SSH_COMMAND:-not set}'"
+    log "DEBUG: ENVIRONMENT: '${ENVIRONMENT}', GIT_BRANCH: '${GIT_BRANCH}'"
+    # Quick connectivity check with verbose SSH before attempting git clone
+    local ssh_check
+    ssh_check=$(GIT_SSH_COMMAND="ssh -i /root/.ssh/waf_gitops_ed25519 -o IdentitiesOnly=yes \
+-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -v" \
+        git ls-remote "${REPO_URL}" HEAD 2>&1 | head -30 || true)
+    log "DEBUG: git ls-remote output: ${ssh_check}"
 
     mkdir -p "${INSTALL_DIR}/logs"
 
@@ -292,9 +304,13 @@ reclone_repository() {
     local branch_arg="${1:-}"
 
     rm -rf "${INSTALL_DIR}/repo"
+    log "DEBUG: reclone_repository - REPO_URL='${REPO_URL}' branch_arg='${branch_arg}'"
+    log "DEBUG: reclone_repository - GIT_SSH_COMMAND='${GIT_SSH_COMMAND:-not set}'"
     if [[ -n "$branch_arg" ]]; then
+        log "DEBUG: running: git clone -b '${branch_arg}' '${REPO_URL}' '${INSTALL_DIR}/repo'"
         git clone -b "$branch_arg" "$REPO_URL" "${INSTALL_DIR}/repo"
     else
+        log "DEBUG: running: git clone '${REPO_URL}' '${INSTALL_DIR}/repo'"
         git clone "$REPO_URL" "${INSTALL_DIR}/repo"
     fi
 }
