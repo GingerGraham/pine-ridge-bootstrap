@@ -21,6 +21,7 @@ set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
+SCRIPT_VERSION="2026-03-20.1"
 REPO_URL=""
 GIT_BRANCH="main"
 ENVIRONMENT="dev"
@@ -135,6 +136,34 @@ done
 [[ "$ENVIRONMENT" =~ ^(dev|preprod|prod)$ ]] \
     || error "Invalid environment '${ENVIRONMENT}'. Must be dev, preprod, or prod."
 [[ $EUID -eq 0 ]]         || error "This script must be run as root (sudo)"
+
+normalize_repo_url() {
+    local original_url="$REPO_URL"
+    local repo_path=""
+
+    if [[ "$REPO_URL" =~ ^https://github\.com/(.+)$ ]]; then
+        repo_path="${BASH_REMATCH[1]}"
+        while [[ "$repo_path" == *.git ]]; do
+            repo_path="${repo_path%.git}"
+        done
+        REPO_URL="git@github.com:${repo_path}.git"
+    elif [[ "$REPO_URL" =~ ^git@github\.com:(.+)$ ]]; then
+        repo_path="${BASH_REMATCH[1]}"
+        while [[ "$repo_path" == *.git ]]; do
+            repo_path="${repo_path%.git}"
+        done
+        REPO_URL="git@github.com:${repo_path}.git"
+    fi
+
+    if [[ "$REPO_URL" != "$original_url" ]]; then
+        log "Normalized repo URL: '${original_url}' -> '${REPO_URL}'"
+    else
+        log "DEBUG: Repo URL unchanged by normalization: '${REPO_URL}'"
+    fi
+}
+
+log "Bootstrap script version: ${SCRIPT_VERSION}"
+normalize_repo_url
 
 # Preprod must always track main; ignore custom branch input there.
 if [[ "$ENVIRONMENT" == "preprod" && "$GIT_BRANCH" != "main" ]]; then
@@ -257,19 +286,13 @@ EOF
 
 convert_repo_url() {
     log "DEBUG: REPO_URL before conversion: '${REPO_URL}'"
-    if [[ "$REPO_URL" =~ ^https://github\.com/(.+)$ ]]; then
-        local repo_path="${BASH_REMATCH[1]}"
-        repo_path="${repo_path%.git}"
-        REPO_URL="git@github.com:${repo_path}.git"
-        log "Converted repo URL to SSH: ${REPO_URL}"
-    else
-        log "DEBUG: URL did not match HTTPS pattern - using as-is: '${REPO_URL}'"
-    fi
+    normalize_repo_url
 }
 
 # ── Step 5: Clone repository ──────────────────────────────────────────────────
 
 clone_repository() {
+    normalize_repo_url
     log "Cloning repository..."
     log "DEBUG: REPO_URL at clone time: '${REPO_URL}'"
     log "DEBUG: GIT_SSH_COMMAND: '${GIT_SSH_COMMAND:-not set}'"
