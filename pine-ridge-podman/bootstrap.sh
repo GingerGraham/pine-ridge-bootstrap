@@ -21,6 +21,9 @@ DEBUG=false
 
 touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/dev/null"
 
+NONINTERACTIVE_STDIN=false
+[[ ! -t 0 ]] && NONINTERACTIVE_STDIN=true
+
 log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
@@ -34,6 +37,48 @@ debug() {
 error() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $1" | tee -a "$LOG_FILE" >&2
     exit 1
+}
+
+run_maybe_detached_stdin() {
+    if [[ "$NONINTERACTIVE_STDIN" == "true" ]]; then
+        "$@" < /dev/null
+    else
+        "$@"
+    fi
+}
+
+wait_for_github_ssh_auth() {
+    local ssh_key="$1"
+    local max_wait_seconds="${2:-90}"
+    local poll_interval_seconds="${3:-5}"
+    local elapsed=0
+    local ssh_test_output=""
+
+    while (( elapsed <= max_wait_seconds )); do
+        ssh_test_output=$(sudo ssh -i "$ssh_key" -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -T git@github.com < /dev/null 2>&1 || true)
+
+        if echo "$ssh_test_output" | grep -q "successfully authenticated"; then
+            log "SSH connection to GitHub verified successfully"
+            export GIT_SSH_COMMAND="ssh -i ${ssh_key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+            return 0
+        fi
+
+        if (( elapsed == 0 )); then
+            log "Waiting for GitHub deploy key activation..."
+        elif (( elapsed % 10 == 0 )); then
+            log "Still waiting for GitHub deploy key activation... ${elapsed}s elapsed"
+        fi
+
+        sleep "$poll_interval_seconds"
+        elapsed=$((elapsed + poll_interval_seconds))
+    done
+
+    log "SSH connection to GitHub could not be verified yet. Continuing anyway."
+    log "Last SSH test output: ${ssh_test_output}"
+    export GIT_SSH_COMMAND="ssh -i ${ssh_key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+    return 1
 }
 
 usage() {
@@ -181,13 +226,7 @@ setup_ssh_auth() {
         if [ -t 0 ]; then
             read -p "Press Enter after adding the deploy key to GitHub..."
         else
-            echo "Script is running from pipe. Waiting 90 seconds for you to add the SSH key..."
-            for i in {90..1}; do
-                if [[ $((i % 10)) -eq 0 ]]; then
-                    echo "Waiting... $i seconds remaining"
-                fi
-                sleep 1
-            done
+            echo "Script is running from pipe. Polling GitHub for deploy key activation for up to 90 seconds..."
         fi
     else
         log "Using existing SSH key - no GitHub deploy key update needed"
@@ -206,6 +245,8 @@ Host github.com
 EOF
 
     sudo chmod 600 "$ssh_config"
+
+    wait_for_github_ssh_auth "$ssh_key" 90 5 || true
 }
 
 reclone_repository() {
@@ -215,9 +256,9 @@ reclone_repository() {
     debug "Re-cloning repository. branch='${branch_arg:-<default>}' url='${REPO_URL}'"
 
     if [[ -n "$branch_arg" ]]; then
-        sudo git clone -b "$branch_arg" "$REPO_URL" "${INSTALL_DIR}/repo"
+        run_maybe_detached_stdin sudo env GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-}" git clone -b "$branch_arg" "$REPO_URL" "${INSTALL_DIR}/repo"
     else
-        sudo git clone "$REPO_URL" "${INSTALL_DIR}/repo"
+        run_maybe_detached_stdin sudo env GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-}" git clone "$REPO_URL" "${INSTALL_DIR}/repo"
     fi
 }
 
@@ -240,7 +281,7 @@ clone_branch() {
             return
         fi
 
-        sudo git fetch origin "$branch"
+        run_maybe_detached_stdin sudo env GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-}" git fetch origin "$branch"
         sudo git checkout "$branch" 2>/dev/null || sudo git checkout -b "$branch" "origin/${branch}"
         sudo git reset --hard "origin/${branch}"
     else
@@ -267,14 +308,14 @@ clone_prod() {
             cd "${INSTALL_DIR}/repo"
         fi
 
-        sudo git fetch --all --tags
+        run_maybe_detached_stdin sudo env GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-}" git fetch --all --tags
     else
         reclone_repository
         cd "${INSTALL_DIR}/repo"
-        sudo git fetch --all --tags
+        run_maybe_detached_stdin sudo env GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-}" git fetch --all --tags
     fi
 
-    latest_tag=$(sudo git ls-remote --tags --refs origin \
+    latest_tag=$(run_maybe_detached_stdin sudo env GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-}" git ls-remote --tags --refs origin \
         | grep -E 'refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
         | awk '{print $2}' \
         | sed 's|refs/tags/||' \
@@ -294,7 +335,9 @@ clone_repository() {
     log "Cloning repository..."
 
     local ssh_test_result
-    ssh_test_result=$(sudo ssh -T git@github.com 2>&1 || true)
+    ssh_test_result=$(sudo ssh -i /root/.ssh/podman_gitops_ed25519 -o IdentitiesOnly=yes \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -T git@github.com < /dev/null 2>&1 || true)
     if echo "$ssh_test_result" | grep -q "successfully authenticated"; then
         log "SSH connection to GitHub verified successfully"
     else
