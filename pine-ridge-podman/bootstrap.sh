@@ -510,6 +510,9 @@ setup_ansible_gitops() {
 
     local sync_script="${INSTALL_DIR}/repo/scripts/sync-repo.sh"
     local switch_script="${INSTALL_DIR}/repo/scripts/switch-branch.sh"
+    local service_unit="/etc/systemd/system/pine-ridge-git-sync.service"
+    local timer_unit="/etc/systemd/system/pine-ridge-git-sync.timer"
+    local ansible_managed_marker="# Managed by Ansible: systemd_management role"
 
     [[ -f "$sync_script" ]] || error "Required GitOps script missing: $sync_script"
     sudo chmod +x "$sync_script"
@@ -520,7 +523,17 @@ setup_ansible_gitops() {
         log "WARNING: switch-branch.sh not found; source-switch helper will be unavailable until repo provides it"
     fi
 
-    sudo tee /etc/systemd/system/pine-ridge-git-sync.service > /dev/null <<EOF
+    if sudo test -f "$service_unit" \
+        && sudo test -f "$timer_unit" \
+        && sudo grep -Fq "$ansible_managed_marker" "$service_unit" \
+        && sudo grep -Fq "$ansible_managed_marker" "$timer_unit"; then
+        log "Git sync systemd units are already managed by Ansible; skipping bootstrap-owned unit creation"
+        return 0
+    fi
+
+    log "Ansible-managed git sync units not detected; creating bootstrap fallback units for compatibility"
+
+    sudo tee "$service_unit" > /dev/null <<EOF
 [Unit]
 Description=Pine Ridge Git Sync
 After=network-online.target
@@ -539,7 +552,7 @@ TimeoutSec=300
 WantedBy=multi-user.target
 EOF
 
-    sudo tee /etc/systemd/system/pine-ridge-git-sync.timer > /dev/null <<'EOF'
+    sudo tee "$timer_unit" > /dev/null <<'EOF'
 [Unit]
 Description=Pine Ridge Git Sync Timer
 Requires=pine-ridge-git-sync.service
@@ -556,7 +569,7 @@ EOF
     sudo systemctl daemon-reload
     sudo systemctl enable --now pine-ridge-git-sync.timer
 
-    log "Pine Ridge GitOps automation chain configured and started"
+    log "Pine Ridge GitOps automation chain configured and started via bootstrap fallback"
 }
 
 show_completion_status() {

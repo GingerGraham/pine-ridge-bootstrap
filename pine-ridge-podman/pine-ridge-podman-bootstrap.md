@@ -227,6 +227,20 @@ git status
 git remote -v
 ```
 
+## Git Sync Ownership
+
+The bootstrap script now treats git sync systemd units as Ansible-owned.
+
+- `bootstrap.yml` applies the `systemd_management` role, which manages
+  `pine-ridge-git-sync.service` and `pine-ridge-git-sync.timer`
+- the managed service standardizes older hosts onto
+  `/opt/pine-ridge-podman/repo/scripts/sync-repo.sh`
+- bootstrap keeps a temporary fallback and only creates the git sync units if the
+  Ansible-managed marker is not present after the initial playbook run
+
+This handoff keeps bootstrap safe for partially migrated hosts while allowing the
+repository to remain the source of truth for ongoing automation.
+
 ## Differences from Script-Based Approach
 
 This Ansible-based bootstrap provides several advantages over the previous script-based approach:
