@@ -496,7 +496,7 @@ EOF
             log "Initial service deployment failed - services may need manual deployment"
         fi
     else
-        log "Initial bootstrap failed - you may need to rerun bootstrap.yml manually"
+        error "Initial bootstrap failed; aborting before git sync setup to avoid unsafe partial state"
     fi
 
     rm -f /tmp/bootstrap-ansible.cfg
