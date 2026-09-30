@@ -542,7 +542,7 @@ EOF
     if sudo -E ansible-playbook bootstrap.yml --limit "$current_hostname" \
         --vault-password-file "$VAULT_PASSWORD_SCRIPT"; then
         log "Initial bootstrap configuration completed successfully"
-        if sudo ansible-playbook service-deployment.yml --limit "$current_hostname" \
+        if sudo -E ansible-playbook service-deployment.yml --limit "$current_hostname" \
             --vault-password-file "$VAULT_PASSWORD_SCRIPT"; then
             log "Initial service deployment completed successfully"
         else
