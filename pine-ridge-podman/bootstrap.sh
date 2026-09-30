@@ -516,6 +516,7 @@ host_key_checking = False
 timeout = 30
 gathering = smart
 fact_caching = memory
+inject_facts_as_vars = False
 stdout_callback = ansible.builtin.default
 bin_ansible_callbacks = True
 
