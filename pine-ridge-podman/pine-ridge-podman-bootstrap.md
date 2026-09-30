@@ -130,9 +130,12 @@ Usage: ./bootstrap.sh [OPTIONS] [--repo REPO_URL] [--environment ENV] [--branch 
 
 Options:
   --interactive, -i          Force interactive mode (for SSH sessions or troubleshooting)
+  --non-interactive          Never prompt; fail on missing vault password or GitHub access
+  --vault-password-file PATH Read the vault password from PATH (overwrites stored password)
   --repo REPO_URL           Repository URL (required)
   --environment ENV         Deployment mode: dev, preprod, or prod
   --branch BRANCH           Git branch to use for dev only (default: main)
+  --rotate-ssh-key          Force SSH deploy key rotation
   --debug, --verbose        Enable verbose troubleshooting output
   --help, -h                Show help message
 
@@ -141,6 +144,30 @@ Examples:
   ./bootstrap.sh --interactive --repo https://github.com/yourusername/pine-ridge-podman.git --environment dev --branch feat/moving-to-ansible
   ./bootstrap.sh https://github.com/yourusername/pine-ridge-podman.git develop  # legacy format
 ```
+
+### Unattended Mode
+
+Used when a provisioning tool (for example the `gitops_handoff` module in `pine-ridge-proxmox`) drives the bootstrap.
+
+The caller is responsible for the two steps that are otherwise manual:
+
+1. Generate the deploy key on the host at `/root/.ssh/podman_gitops_ed25519` and register its public key on the repository. Bootstrap reuses an existing key.
+2. Place the vault password in a file readable by the bootstrap user.
+
+```bash
+./bootstrap.sh --non-interactive \
+  --vault-password-file /tmp/vault-pass \
+  --repo git@github.com:yourusername/pine-ridge-podman.git \
+  --environment dev
+```
+
+In this mode the script:
+
+- never prompts, including for the deploy key paste or the "continue anyway" SSH check
+- fails if GitHub SSH authentication fails, instead of continuing
+- fails if no vault password is stored or supplied, instead of writing the `VAULT_PASSWORD_NOT_SET` placeholder
+
+The script does not delete the supplied password file. The caller removes it.
 
 ## Monitoring and Management
 

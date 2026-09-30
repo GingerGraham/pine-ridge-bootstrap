@@ -6,16 +6,24 @@
 #   preprod - Tracks main HEAD. Any commit to main auto-deploys.
 #   prod    - Deploys the latest stable semver-tagged release.
 #             Use switch-branch --pin-tag for rollback to a specific tag.
+#
+# Unattended use (e.g. driven from pine-ridge-proxmox):
+#   Pre-register the host's deploy key at /root/.ssh/podman_gitops_ed25519,
+#   then run with --non-interactive --vault-password-file <path>.
+#   The script never prompts in this mode and fails instead of continuing
+#   with a placeholder vault password or unverified GitHub access.
 
 set -euo pipefail
 
-SCRIPT_VERSION="3.0.0"
+SCRIPT_VERSION="3.1.0"
 REPO_URL="https://github.com/yourusername/pine-ridge-podman.git"
 ENVIRONMENT="dev"
 GIT_BRANCH="main"
 INSTALL_DIR="/opt/pine-ridge-podman"
 LOG_FILE="/tmp/podman-bootstrap-$(date +%s).log"
 FORCE_INTERACTIVE=false
+NON_INTERACTIVE=false
+VAULT_PASSWORD_FILE=""
 ROTATE_SSH_KEY=false
 DEBUG=false
 
@@ -92,6 +100,11 @@ Options:
   --environment <ENV>       dev, preprod, or prod (default: dev)
   --branch <BRANCH>         Git branch for dev only (default: main)
   --interactive, -i         Force interactive mode for vault password setup
+  --non-interactive         Never prompt. Fail if the vault password or GitHub
+                            access is missing rather than continuing.
+  --vault-password-file <PATH>
+                            Read the Ansible vault password from PATH (first
+                            line). Overwrites any existing stored password.
   --rotate-ssh-key          Force SSH key rotation
   --debug, --verbose        Enable verbose troubleshooting output
   --help, -h                Show this help
@@ -223,8 +236,10 @@ setup_ssh_auth() {
         echo "6. Click 'Add key'"
         echo
 
-        if [ -t 0 ]; then
-            read -p "Press Enter after adding the deploy key to GitHub..."
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            echo "Non-interactive mode. Polling GitHub for deploy key activation for up to 90 seconds..."
+        elif [ -t 0 ]; then
+            read -r -p "Press Enter after adding the deploy key to GitHub..."
         else
             echo "Script is running from pipe. Polling GitHub for deploy key activation for up to 90 seconds..."
         fi
@@ -343,8 +358,10 @@ clone_repository() {
     else
         log "SSH connection to GitHub failed. Please verify deploy key access."
         echo "$ssh_test_result"
-        if [ -t 0 ]; then
-            read -p "Continue anyway? (y/N): " -n 1 -r
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            error "SSH authentication to GitHub failed in non-interactive mode. Is the deploy key registered on the repository?"
+        elif [ -t 0 ]; then
+            read -r -p "Continue anyway? (y/N): " -n 1
             echo
             [[ $REPLY =~ ^[Yy]$ ]] || error "SSH authentication failed. Please fix the issue and try again."
         else
@@ -391,19 +408,26 @@ setup_vault_password() {
         current_password=$(sudo cat "$vault_pass_file" 2>/dev/null || echo "")
     fi
 
-    if [[ -z "$current_password" || "$current_password" == "VAULT_PASSWORD_NOT_SET" ]]; then
-        if [ -t 0 ] || [[ "$FORCE_INTERACTIVE" == "true" ]]; then
+    if [[ -n "$VAULT_PASSWORD_FILE" ]]; then
+        # An explicitly supplied password always wins over the stored one
+        log "Reading vault password from ${VAULT_PASSWORD_FILE}"
+        IFS= read -r vault_password < "$VAULT_PASSWORD_FILE" || true
+        [[ -n "$vault_password" ]] || error "Vault password file is empty: ${VAULT_PASSWORD_FILE}"
+    elif [[ -z "$current_password" || "$current_password" == "VAULT_PASSWORD_NOT_SET" ]]; then
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            error "No vault password stored and none supplied. Use --vault-password-file in non-interactive mode."
+        elif [ -t 0 ] || [[ "$FORCE_INTERACTIVE" == "true" ]]; then
             local vault_password_input
             local vault_password_confirm
 
             while true; do
                 echo "Enter the Ansible vault password:"
-                read -p "Password: " -s vault_password_input < /dev/tty
+                IFS= read -r -s -p "Password: " vault_password_input < /dev/tty
                 echo
                 [[ -n "$vault_password_input" ]] || { echo "Password cannot be empty."; continue; }
 
                 echo "Confirm the password:"
-                read -p "Password (again): " -s vault_password_confirm < /dev/tty
+                IFS= read -r -s -p "Password (again): " vault_password_confirm < /dev/tty
                 echo
 
                 if [[ "$vault_password_input" == "$vault_password_confirm" ]]; then
@@ -420,7 +444,7 @@ setup_vault_password() {
         vault_password="$current_password"
     fi
 
-    echo "$vault_password" | sudo tee "$vault_pass_file" > /dev/null
+    printf '%s\n' "$vault_password" | sudo tee "$vault_pass_file" > /dev/null
     sudo chmod 640 "$vault_pass_file"
     sudo chown root:"$vault_group" "$vault_pass_file"
 
@@ -606,6 +630,15 @@ while [[ $# -gt 0 ]]; do
             FORCE_INTERACTIVE=true
             shift
             ;;
+        --non-interactive)
+            NON_INTERACTIVE=true
+            shift
+            ;;
+        --vault-password-file)
+            [[ -n "${2:-}" ]] || error "--vault-password-file requires a path"
+            VAULT_PASSWORD_FILE="$2"
+            shift 2
+            ;;
         --rotate-ssh-key)
             ROTATE_SSH_KEY=true
             shift
@@ -649,6 +682,14 @@ done
 
 [[ "$ENVIRONMENT" =~ ^(dev|preprod|prod)$ ]] || error "Invalid environment '${ENVIRONMENT}'. Must be dev, preprod, or prod."
 
+if [[ "$FORCE_INTERACTIVE" == "true" && "$NON_INTERACTIVE" == "true" ]]; then
+    error "--interactive and --non-interactive cannot be used together"
+fi
+
+if [[ -n "$VAULT_PASSWORD_FILE" && ! -r "$VAULT_PASSWORD_FILE" ]]; then
+    error "Vault password file not found or not readable: ${VAULT_PASSWORD_FILE}"
+fi
+
 normalize_repo_url
 
 if [[ "$ENVIRONMENT" == "preprod" && "$GIT_BRANCH" != "main" ]]; then
@@ -665,6 +706,7 @@ log "Repository: $REPO_URL"
 log "Environment: $ENVIRONMENT"
 debug "Branch: $GIT_BRANCH"
 debug "FORCE_INTERACTIVE: ${FORCE_INTERACTIVE}"
+debug "NON_INTERACTIVE: ${NON_INTERACTIVE}"
 debug "ROTATE_SSH_KEY: ${ROTATE_SSH_KEY}"
 
 check_prerequisites
