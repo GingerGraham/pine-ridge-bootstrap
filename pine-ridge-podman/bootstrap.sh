@@ -516,6 +516,7 @@ host_key_checking = False
 timeout = 30
 gathering = smart
 fact_caching = memory
+inject_facts_as_vars = False
 stdout_callback = ansible.builtin.default
 bin_ansible_callbacks = True
 
@@ -541,7 +542,7 @@ EOF
     if sudo -E ansible-playbook bootstrap.yml --limit "$current_hostname" \
         --vault-password-file "$VAULT_PASSWORD_SCRIPT"; then
         log "Initial bootstrap configuration completed successfully"
-        if sudo ansible-playbook service-deployment.yml --limit "$current_hostname" \
+        if sudo -E ansible-playbook service-deployment.yml --limit "$current_hostname" \
             --vault-password-file "$VAULT_PASSWORD_SCRIPT"; then
             log "Initial service deployment completed successfully"
         else
