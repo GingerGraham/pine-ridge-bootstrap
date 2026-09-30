@@ -24,6 +24,8 @@ LOG_FILE="/tmp/podman-bootstrap-$(date +%s).log"
 FORCE_INTERACTIVE=false
 NON_INTERACTIVE=false
 VAULT_PASSWORD_FILE=""
+# Executable that prints the stored vault password; also used by the repo's ansible.cfg
+VAULT_PASSWORD_SCRIPT="/usr/local/bin/get-podman-vault-pass.sh"
 ROTATE_SSH_KEY=false
 DEBUG=false
 
@@ -391,7 +393,7 @@ setup_vault_password() {
     log "Setting up Ansible vault password..."
 
     local vault_pass_file="/etc/pine-ridge-podman-vault-pass"
-    local vault_script="/usr/local/bin/get-podman-vault-pass.sh"
+    local vault_script="$VAULT_PASSWORD_SCRIPT"
     local vault_group="podman-vault"
     local current_password=""
     local vault_password=""
@@ -475,6 +477,25 @@ $pinned_line
 EOF
 }
 
+verify_vault_decryption() {
+    # Fail before running playbooks if the stored password cannot open the vault
+    local vault_file="inventory/group_vars/vault.yml"
+
+    if [[ ! -f "$vault_file" ]]; then
+        debug "No ${vault_file} found; skipping vault decryption check"
+        return 0
+    fi
+
+    if sudo timeout 10 ansible-vault view "$vault_file" \
+        --vault-password-file "$VAULT_PASSWORD_SCRIPT" >/dev/null 2>&1; then
+        log "Vault decryption check passed"
+    elif [[ "$NON_INTERACTIVE" == "true" ]]; then
+        error "Stored vault password cannot decrypt ${vault_file}. Check the password supplied with --vault-password-file."
+    else
+        log "WARNING: Stored vault password cannot decrypt ${vault_file}. Playbooks using vaulted variables will fail."
+    fi
+}
+
 run_initial_deployment() {
     log "Running initial Podman configuration..."
     cd "$INSTALL_DIR/repo/ansible"
@@ -511,10 +532,17 @@ EOF
 
     local current_hostname
     current_hostname=$(hostname -f)
+
+    verify_vault_decryption
+
+    # The temporary ansible.cfg above replaces the repo's one, which is where
+    # vault_password_file is normally set, so pass it explicitly.
     log "Running initial bootstrap playbook for host: ${current_hostname}"
-    if sudo -E ansible-playbook bootstrap.yml --limit "$current_hostname"; then
+    if sudo -E ansible-playbook bootstrap.yml --limit "$current_hostname" \
+        --vault-password-file "$VAULT_PASSWORD_SCRIPT"; then
         log "Initial bootstrap configuration completed successfully"
-        if sudo ansible-playbook service-deployment.yml --limit "$current_hostname"; then
+        if sudo ansible-playbook service-deployment.yml --limit "$current_hostname" \
+            --vault-password-file "$VAULT_PASSWORD_SCRIPT"; then
             log "Initial service deployment completed successfully"
         else
             log "Initial service deployment failed - services may need manual deployment"
