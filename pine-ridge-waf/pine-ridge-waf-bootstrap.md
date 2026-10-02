@@ -131,6 +131,11 @@ curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/ma
 #   --branch <BRANCH>        Git branch for dev environments only (default: main)
 #                            preprod is always fixed to main; prod ignores this flag
 #   --interactive, -i        Force interactive mode for vault password prompts
+#   --non-interactive        Never prompt; fail on missing vault password, GitHub
+#                            access, or a failed initial playbook run
+#   --vault-password-file PATH
+#                            Read the vault password from PATH (overwrites stored password)
+#   --rotate-ssh-key         Replace the existing deploy key (default: reuse it)
 #   --debug, --verbose, -v   Enable verbose troubleshooting output
 #   --help, -h               Show help message
 ```
@@ -155,11 +160,30 @@ curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/ma
 
 ### 🤖 **Automated Deployment (CI/CD, Scripts)**
 
-Use basic mode - vault password setup will be skipped and can be configured later:
+Use unattended mode. Used by the `gitops_handoff` module in `pine-ridge-proxmox` for the dev and preprod WAFs.
+
+The caller does the two steps that are otherwise manual:
+
+1. Generate the deploy key on the host at `/root/.ssh/waf_gitops_ed25519` and register its public key on the repository. Bootstrap reuses an existing key.
+2. Place the vault password in a file the bootstrap can read.
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/GingerGraham/pine-ridge-bootstrap/main/pine-ridge-waf/bootstrap.sh | bash -s -- --repo https://github.com/GingerGraham/pine-ridge-waf.git --environment preprod
+./bootstrap.sh --non-interactive \
+  --vault-password-file /tmp/vault-pass \
+  --repo git@github.com:GingerGraham/pine-ridge-waf.git \
+  --environment preprod
 ```
+
+In this mode the script:
+
+- never prompts, including for the deploy key paste and the vault password update question
+- fails if GitHub does not accept the deploy key within 90 seconds
+- fails if no vault password is stored or supplied, instead of writing the `VAULT_PASSWORD_NOT_SET` placeholder
+- fails if the stored password cannot decrypt `inventory/group_vars/vault.yml`
+
+The script can be started as a user with passwordless sudo. It re-runs itself under `sudo -n` with the same arguments. It does not delete the supplied password file; the caller removes it.
+
+Piping the script without `--non-interactive` still works as before: the vault password becomes a placeholder to set later.
 
 ### 🔧 **Development/Testing**
 
@@ -176,10 +200,11 @@ sudo ./bootstrap.sh --interactive --repo https://github.com/GingerGraham/pine-ri
 
 The script intelligently handles partial completions:
 
-- **Existing SSH keys**: Automatically regenerated
+- **Existing SSH keys**: Reused, so the registered deploy key keeps working. Use `--rotate-ssh-key` to replace it
 - **Existing repository**: Updated or re-cloned as needed
 - **Placeholder vault password**: Will prompt for real password in interactive mode
 - **Real vault password**: Will ask if you want to update it
+- **Failed initial playbook run**: The script stops before enabling `waf-ansible.timer`. Fix the error and re-run. With the `VAULT_PASSWORD_NOT_SET` placeholder the failure is expected and the script continues
 
 ## Setup Process
 
@@ -187,9 +212,10 @@ The script intelligently handles partial completions:
 
 During the bootstrap process, the script will:
 
-1. Generate an SSH deploy key (`/root/.ssh/waf_gitops_ed25519`)
-2. Display the public key for you to copy
-3. Pause for you to add the deploy key to your GitHub repository
+1. Generate an SSH deploy key (`/root/.ssh/waf_gitops_ed25519`), or reuse the existing one
+2. For a new key, display the public key for you to copy
+3. For a new key, pause for you to add the deploy key to your GitHub repository
+4. Poll GitHub for up to 90 seconds until the key is accepted
 
 **To add the deploy key to GitHub:**
 

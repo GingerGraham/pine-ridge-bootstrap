@@ -15,19 +15,44 @@
 #   --environment <ENV>    Deployment mode: dev, preprod, or prod. Default: dev.
 #   --branch <BRANCH>      Git branch for dev/preprod. Default: main.
 #   --interactive          Force interactive mode (prompts for vault password).
+#   --non-interactive      Never prompt; fail instead of continuing with gaps.
+#   --vault-password-file <PATH>
+#                          Read the vault password from PATH (first line).
+#   --rotate-ssh-key       Replace the existing deploy key with a new one.
 #   --debug, --verbose     Enable verbose troubleshooting output.
 #   --help                 Show this help.
+#
+# Unattended use (e.g. driven from pine-ridge-proxmox):
+#   Pre-register the host's deploy key at /root/.ssh/waf_gitops_ed25519,
+#   then run with --non-interactive --vault-password-file <path>.
+#   The script never prompts in this mode. It fails instead of continuing
+#   with a placeholder vault password, unverified GitHub access, or a failed
+#   initial playbook run.
 
 set -euo pipefail
 
+# The pine-ridge-proxmox handoff starts this script as an unprivileged user
+# with passwordless sudo. Everything below expects root, so when the script
+# is a file on disk, re-run it under sudo with the same arguments.
+# ('curl ... | sudo bash' is already root and never reaches this.)
+if [[ $EUID -ne 0 && -f "$0" ]]; then
+    exec sudo -n bash "$0" "$@"
+fi
+
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
-SCRIPT_VERSION="2026-03-20.2"
+SCRIPT_VERSION="2026-09-30.1"
 REPO_URL=""
 GIT_BRANCH="main"
 ENVIRONMENT="dev"
 INSTALL_DIR="/opt/pine-ridge-waf"
+SSH_KEY_PATH="/root/.ssh/waf_gitops_ed25519"
+GITHUB_AUTH_WAIT_SECONDS=90
 FORCE_INTERACTIVE=false
+NON_INTERACTIVE=false
+VAULT_PASSWORD_FILE=""
+VAULT_PASSWORD_IS_PLACEHOLDER=false
+ROTATE_SSH_KEY=false
 DEBUG=false
 
 LOG_FILE="/tmp/waf-bootstrap-$(date +%s).log"
@@ -64,7 +89,15 @@ Options:
   --branch <BRANCH>         Git branch for dev only (default: main)
                             (preprod is always forced to main)
   --interactive             Force interactive mode for vault password setup
-    --debug, --verbose        Enable verbose troubleshooting output
+  --non-interactive         Never prompt. Fail if the vault password, GitHub
+                            access or the initial playbook run is missing or
+                            broken, rather than continuing.
+  --vault-password-file <PATH>
+                            Read the Ansible vault password from PATH (first
+                            line). Overwrites any existing stored password.
+  --rotate-ssh-key          Replace the existing deploy key with a new one.
+                            Without this an existing key is reused.
+  --debug, --verbose        Enable verbose troubleshooting output
   --help                    Show this help
 
 Environments:
@@ -126,6 +159,19 @@ while [[ $# -gt 0 ]]; do
             FORCE_INTERACTIVE=true
             shift
             ;;
+        --non-interactive)
+            NON_INTERACTIVE=true
+            shift
+            ;;
+        --vault-password-file)
+            VAULT_PASSWORD_FILE="${2:-}"
+            [[ -n "$VAULT_PASSWORD_FILE" ]] || error "--vault-password-file requires a path"
+            shift 2
+            ;;
+        --rotate-ssh-key)
+            ROTATE_SSH_KEY=true
+            shift
+            ;;
         --debug|--verbose|-v)
             DEBUG=true
             shift
@@ -136,6 +182,10 @@ while [[ $# -gt 0 ]]; do
         # Legacy positional: ./bootstrap.sh <REPO_URL> [BRANCH]
         http*|git@*)
             [[ -z "$REPO_URL" ]] && { REPO_URL="$1"; shift; } || error "Unexpected argument: $1"
+            ;;
+        -*)
+            # Without this, an unknown option was taken as the positional branch
+            error "Unknown option: $1 (use --help)"
             ;;
         *)
             [[ -n "$REPO_URL" && -z "${POSITIONAL_BRANCH:-}" ]] \
@@ -149,6 +199,14 @@ done
 [[ "$ENVIRONMENT" =~ ^(dev|preprod|prod)$ ]] \
     || error "Invalid environment '${ENVIRONMENT}'. Must be dev, preprod, or prod."
 [[ $EUID -eq 0 ]]         || error "This script must be run as root (sudo)"
+
+if [[ "$FORCE_INTERACTIVE" == "true" && "$NON_INTERACTIVE" == "true" ]]; then
+    error "--interactive and --non-interactive cannot be used together"
+fi
+
+if [[ -n "$VAULT_PASSWORD_FILE" && ! -r "$VAULT_PASSWORD_FILE" ]]; then
+    error "Vault password file not found or not readable: ${VAULT_PASSWORD_FILE}"
+fi
 
 normalize_repo_url() {
     local original_url="$REPO_URL"
@@ -192,6 +250,9 @@ log "Environment : ${ENVIRONMENT}"
 if [[ "$ENVIRONMENT" != "prod" ]]; then
     log "Branch      : ${GIT_BRANCH}"
 fi
+debug "NON_INTERACTIVE: ${NON_INTERACTIVE}"
+debug "FORCE_INTERACTIVE: ${FORCE_INTERACTIVE}"
+debug "ROTATE_SSH_KEY: ${ROTATE_SSH_KEY}"
 
 # ── Step 1: Prerequisites ─────────────────────────────────────────────────────
 
@@ -225,16 +286,66 @@ install_ansible() {
 
 # ── Step 3: SSH deploy key ────────────────────────────────────────────────────
 
+wait_for_github_ssh_auth() {
+    # Returns 0 once GitHub accepts the key, 1 after max_wait_seconds.
+    # Uses the key explicitly so the result does not depend on HOME
+    # (with 'curl | sudo bash', HOME may not be /root).
+    local ssh_key="$1"
+    local max_wait_seconds="$2"
+    local poll_interval_seconds=5
+    local elapsed=0
+    local ssh_test=""
+
+    while (( elapsed <= max_wait_seconds )); do
+        ssh_test=$(ssh -i "$ssh_key" -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -T git@github.com < /dev/null 2>&1 || true)
+
+        if grep -q "successfully authenticated" <<<"$ssh_test"; then
+            log "SSH connection to GitHub verified"
+            return 0
+        fi
+
+        if (( elapsed == 0 )); then
+            log "Waiting for GitHub to accept the deploy key (up to ${max_wait_seconds}s)..."
+        elif (( elapsed % 15 == 0 )); then
+            log "Still waiting for GitHub... ${elapsed}s elapsed"
+        fi
+
+        sleep "$poll_interval_seconds"
+        elapsed=$((elapsed + poll_interval_seconds))
+    done
+
+    log "Last SSH test output: ${ssh_test}"
+    return 1
+}
+
 setup_ssh_key() {
     log "Setting up SSH deploy key..."
 
-    local ssh_key="/root/.ssh/waf_gitops_ed25519"
+    local ssh_key="$SSH_KEY_PATH"
+    local key_is_new=false
+
     mkdir -p /root/.ssh
     chmod 700 /root/.ssh
 
-    rm -f "$ssh_key" "${ssh_key}.pub"
-    echo | ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "waf-gitops@$(hostname)" 2>/dev/null \
-        || ssh-keygen -t ed25519 -f "$ssh_key" -N "" -C "waf-gitops@$(hostname)" < /dev/null
+    if [[ "$ROTATE_SSH_KEY" == "true" ]]; then
+        log "Deploy key rotation requested - removing the existing key"
+        rm -f "$ssh_key" "${ssh_key}.pub"
+    fi
+
+    # Reusing an existing key keeps re-runs working without re-registering,
+    # and is what lets pine-ridge-proxmox register the key before this runs.
+    if [[ -f "$ssh_key" ]]; then
+        log "Reusing existing deploy key: ${ssh_key}"
+        if [[ ! -f "${ssh_key}.pub" ]]; then
+            ssh-keygen -y -f "$ssh_key" > "${ssh_key}.pub"
+        fi
+    else
+        log "Generating deploy key: ${ssh_key}"
+        ssh-keygen -q -t ed25519 -f "$ssh_key" -N "" -C "waf-gitops@$(hostname)" < /dev/null
+        key_is_new=true
+    fi
 
     chmod 600 "$ssh_key"
     chmod 644 "${ssh_key}.pub"
@@ -252,39 +363,30 @@ Host github.com
 EOF
     chmod 600 /root/.ssh/config
 
-    echo
-    echo "=========================================="
-    echo "ADD THIS DEPLOY KEY TO GITHUB:"
-    echo "  Repo -> Settings -> Deploy keys -> Add deploy key"
-    echo "  Title: waf-$(hostname)"
-    echo "  Key (read-only access is sufficient):"
-    echo "=========================================="
-    cat "${ssh_key}.pub"
-    echo "=========================================="
-    echo
+    if [[ "$key_is_new" == "true" ]]; then
+        echo
+        echo "=========================================="
+        echo "ADD THIS DEPLOY KEY TO GITHUB:"
+        echo "  Repo -> Settings -> Deploy keys -> Add deploy key"
+        echo "  Title: waf-$(hostname)"
+        echo "  Key (read-only access is sufficient):"
+        echo "=========================================="
+        cat "${ssh_key}.pub"
+        echo "=========================================="
+        echo
 
-    if [[ -t 0 ]] || [[ "$FORCE_INTERACTIVE" == "true" ]]; then
-        read -p "Press Enter after adding the deploy key to GitHub..." < /dev/tty
-    else
-        log "Non-interactive mode: waiting 90 seconds for deploy key to be added..."
-        for i in {90..1}; do
-            [[ $((i % 15)) -eq 0 ]] && log "Waiting... ${i}s remaining"
-            sleep 1
-        done
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            log "Non-interactive mode: expecting the caller to register this key"
+        elif [[ -t 0 ]] || [[ "$FORCE_INTERACTIVE" == "true" ]]; then
+            read -r -p "Press Enter after adding the deploy key to GitHub..." < /dev/tty
+        fi
     fi
 
-    # Verify SSH connection - explicitly use the deploy key so that we test
-    # the correct identity regardless of the HOME env var (important when the
-    # script is invoked via 'curl | sudo bash' where HOME may not be /root).
-    local ssh_test
-    ssh_test=$(ssh -i "$ssh_key" -o IdentitiesOnly=yes \
-        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        -T git@github.com 2>&1 || true)
-    if echo "$ssh_test" | grep -q "successfully authenticated"; then
-        log "SSH connection to GitHub verified"
-    else
-        log "WARNING: SSH connection test inconclusive - continuing anyway"
-        log "SSH test output: ${ssh_test}"
+    if ! wait_for_github_ssh_auth "$ssh_key" "$GITHUB_AUTH_WAIT_SECONDS"; then
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            error "GitHub did not accept ${ssh_key} within ${GITHUB_AUTH_WAIT_SECONDS}s. Is it registered as a deploy key on the repository?"
+        fi
+        log "WARNING: SSH connection to GitHub not verified - continuing anyway"
     fi
 
     # Export GIT_SSH_COMMAND so all subsequent git operations in this script
@@ -313,7 +415,7 @@ clone_repository() {
     # Quick connectivity check with verbose SSH before attempting git clone
     local ssh_check
     if [[ "$DEBUG" == "true" ]]; then
-        ssh_check=$(GIT_SSH_COMMAND="ssh -i /root/.ssh/waf_gitops_ed25519 -o IdentitiesOnly=yes \
+        ssh_check=$(GIT_SSH_COMMAND="ssh -i ${SSH_KEY_PATH} -o IdentitiesOnly=yes \
 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -v" \
             git ls-remote "${REPO_URL}" HEAD 2>&1 | head -30 || true)
         debug "git ls-remote output: ${ssh_check}"
@@ -468,15 +570,20 @@ setup_vault_password() {
     local vault_script="/usr/local/bin/get-waf-vault-pass.sh"
     local vault_password=""
 
-    # Reuse existing password if present and real
-    if [[ -f "$vault_password_file" ]]; then
+    if [[ -n "$VAULT_PASSWORD_FILE" ]]; then
+        # An explicitly supplied password always wins over the stored one
+        log "Reading vault password from ${VAULT_PASSWORD_FILE}"
+        IFS= read -r vault_password < "$VAULT_PASSWORD_FILE" || true
+        [[ -n "$vault_password" ]] || error "Vault password file is empty: ${VAULT_PASSWORD_FILE}"
+    elif [[ -f "$vault_password_file" ]]; then
+        # Reuse existing password if present and real
         local current
         current=$(cat "$vault_password_file" 2>/dev/null || echo "")
         if [[ "$current" == "VAULT_PASSWORD_NOT_SET" || -z "$current" ]]; then
-            log "Placeholder password found - will prompt for real password"
+            log "Placeholder password found - a real password is needed"
         else
             log "Existing vault password found"
-            if [[ -t 0 ]] || [[ "$FORCE_INTERACTIVE" == "true" ]]; then
+            if [[ "$NON_INTERACTIVE" != "true" ]] && { [[ -t 0 ]] || [[ "$FORCE_INTERACTIVE" == "true" ]]; }; then
                 read -p "Update the existing vault password? (y/N): " -r update < /dev/tty
                 if [[ ! "${update:-N}" =~ ^[Yy]$ ]]; then
                     log "Keeping existing vault password"
@@ -491,7 +598,9 @@ setup_vault_password() {
 
     # Prompt for password if we don't have one
     if [[ -z "$vault_password" ]]; then
-        if [[ -t 0 ]] || [[ "$FORCE_INTERACTIVE" == "true" ]]; then
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            error "No vault password stored and none supplied. Use --vault-password-file with --non-interactive."
+        elif [[ -t 0 ]] || [[ "$FORCE_INTERACTIVE" == "true" ]]; then
             echo
             echo "=== ANSIBLE VAULT PASSWORD ==="
             while true; do
@@ -509,7 +618,13 @@ setup_vault_password() {
         fi
     fi
 
-    echo "$vault_password" | tee "$vault_password_file" > /dev/null
+    if [[ "$vault_password" == "VAULT_PASSWORD_NOT_SET" ]]; then
+        VAULT_PASSWORD_IS_PLACEHOLDER=true
+    fi
+
+    # Created 0600 so the password is never readable by others, even briefly;
+    # the group permission is added once ownership is set below.
+    ( umask 077; printf '%s\n' "$vault_password" > "$vault_password_file" )
 
     # Create the vault script Ansible uses
     tee "$vault_script" > /dev/null <<'VAULTEOF'
@@ -535,6 +650,8 @@ VAULTEOF
         if timeout 10 ansible-vault view "${INSTALL_DIR}/repo/inventory/group_vars/vault.yml" \
             --vault-password-file "$vault_script" >/dev/null 2>&1; then
             log "Vault decryption check passed"
+        elif [[ "$NON_INTERACTIVE" == "true" ]]; then
+            error "Stored vault password cannot decrypt inventory/group_vars/vault.yml. Check the password supplied with --vault-password-file."
         else
             log "WARNING: Vault decryption check failed. Verify vault password before first scheduled run."
         fi
@@ -555,10 +672,14 @@ run_initial_deployment() {
 
     if ansible-playbook site.yml; then
         log "Initial configuration completed"
+    elif [[ "$VAULT_PASSWORD_IS_PLACEHOLDER" == "true" ]]; then
+        # Expected: vaulted variables cannot be read until a password is set
+        log "Initial configuration playbook exited with errors (vault password not set yet)"
+        log "Set the password, then re-run: cd ${INSTALL_DIR}/repo && ansible-playbook site.yml"
     else
-        log "Initial configuration playbook exited with errors"
-        log "This may be normal if vault is not yet fully configured."
-        log "Re-run manually: cd ${INSTALL_DIR}/repo && ansible-playbook site.yml"
+        # Stop before the GitOps timer is enabled. An enabled timer marks the
+        # host as bootstrapped, and pine-ridge-proxmox would then skip it.
+        error "Initial configuration playbook failed. Fix the error and re-run the bootstrap; the GitOps timer has not been enabled."
     fi
 }
 
